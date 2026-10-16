@@ -1,0 +1,109 @@
+"""Gemini client, with an offline demo mode when no API key is configured."""
+
+import os
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import httpx
+
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+
+class LLMError(Exception):
+    pass
+
+
+def api_key() -> str:
+    return os.environ.get("GEMINI_API_KEY", "").strip()
+
+
+def model_name() -> str:
+    return os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
+
+
+def mode() -> str:
+    return "gemini" if api_key() else "demo"
+
+
+def _clock_context() -> str:
+    tz_name = os.environ.get("AGENT_TIMEZONE", "Asia/Kolkata")
+    try:
+        now = datetime.now(ZoneInfo(tz_name))
+    except ZoneInfoNotFoundError:
+        now = datetime.now()
+    return f"Current date and time: {now.strftime('%A, %d %B %Y, %I:%M %p')} ({tz_name})."
+
+
+async def generate_reply(system_prompt: str, history: list[dict]) -> str:
+    """history: [{"role": "user"|"assistant", "content": str}, ...], ending with the user turn."""
+    if not api_key():
+        return demo_reply(history[-1]["content"] if history else "")
+
+    contents = [
+        {
+            "role": "model" if msg["role"] == "assistant" else "user",
+            "parts": [{"text": msg["content"]}],
+        }
+        for msg in history
+    ]
+    # Gemini requires the conversation to start with a user turn.
+    while contents and contents[0]["role"] == "model":
+        contents.pop(0)
+    if not contents:
+        raise LLMError("Nothing to reply to.")
+
+    body = {
+        "system_instruction": {"parts": [{"text": f"{system_prompt}\n\n{_clock_context()}"}]},
+        "contents": contents,
+        "generationConfig": {"temperature": 0.6, "maxOutputTokens": 1024},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                GEMINI_URL.format(model=model_name()),
+                headers={"x-goog-api-key": api_key()},
+                json=body,
+            )
+    except httpx.HTTPError as exc:
+        raise LLMError(f"Could not reach Gemini: {exc.__class__.__name__}") from exc
+
+    if resp.status_code != 200:
+        try:
+            detail = resp.json().get("error", {}).get("message", resp.text)
+        except ValueError:
+            detail = resp.text
+        raise LLMError(f"Gemini error {resp.status_code}: {detail[:300]}")
+
+    data = resp.json()
+    candidates = data.get("candidates") or []
+    if not candidates:
+        reason = data.get("promptFeedback", {}).get("blockReason", "no response")
+        raise LLMError(f"Gemini returned no answer ({reason}).")
+    parts = candidates[0].get("content", {}).get("parts") or []
+    text = "".join(part.get("text", "") for part in parts).strip()
+    if not text:
+        raise LLMError("Gemini returned an empty answer.")
+    return text
+
+
+def demo_reply(user_text: str) -> str:
+    """Canned replies so the UI can be demoed without credentials."""
+    text = user_text.lower()
+    if any(w in text for w in ("hour", "open", "close", "timing")):
+        return "We're open Monday to Friday from 9am to 6pm, and Saturday from 10am to 2pm. We're closed on Sunday."
+    if any(w in text for w in ("book", "appointment", "schedule", "slot")):
+        return "I'd be happy to book that for you. Could I have your name and a day that works for you?"
+    if any(w in text for w in ("price", "cost", "fee", "charge")):
+        return "A check-up and cleaning costs 1,500 rupees. Other treatments are priced after an exam."
+    if any(w in text for w in ("where", "address", "location")):
+        return "We're at 12 MG Road, Bengaluru."
+    if any(w in text for w in ("pain", "bleed", "swell", "emergency")):
+        return "I'm sorry you're in pain. If it's severe, please come in right away or call emergency services."
+    if any(w in text for w in ("thank", "bye")):
+        return "You're welcome! Have a great day."
+    if any(w in text for w in ("hello", "hi", "hey")):
+        return "Hello! How can I help you today?"
+    return (
+        "I'm running in demo mode right now, so I can only answer about hours, prices, "
+        "location, and bookings. Add a Gemini API key to the .env file for full conversations."
+    )

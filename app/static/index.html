@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent — Voice AI</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Ccircle cx=%278%27 cy=%278%27 r=%277%27 fill=%27%234f46e5%27/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <span>Agent</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-view="talk" role="tab">Talk</button>
+      <button class="tab" data-view="settings" role="tab">Agent</button>
+      <button class="tab" data-view="history" role="tab">History</button>
+    </nav>
+    <span id="mode-badge" class="badge">…</span>
+  </header>
+
+  <main>
+    <!-- Talk -->
+    <section id="view-talk" class="view active">
+      <div class="call-panel">
+        <div class="orb-wrap">
+          <div id="orb" class="orb idle" aria-hidden="true"></div>
+        </div>
+        <h1 id="agent-title">Ava</h1>
+        <p id="status" class="status">Press Start call to begin</p>
+        <div class="call-actions">
+          <button id="start-btn" class="btn primary">Start call</button>
+          <button id="mic-btn" class="btn" disabled>Hold to talk</button>
+          <button id="end-btn" class="btn danger" disabled>End call</button>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="handsfree" checked>
+          Hands-free (listen automatically after the agent speaks)
+        </label>
+        <p id="speech-warning" class="warning hidden">
+          Your browser doesn't support speech recognition. Use Chrome or Edge for voice,
+          or type below.
+        </p>
+      </div>
+
+      <div class="transcript-panel">
+        <div id="transcript" class="transcript" aria-live="polite">
+          <p class="empty">The conversation transcript appears here.</p>
+        </div>
+        <form id="text-form" class="text-form">
+          <input id="text-input" type="text" placeholder="Type a message…" autocomplete="off" disabled>
+          <button class="btn primary" type="submit" id="send-btn" disabled>Send</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section id="view-settings" class="view">
+      <form id="settings-form" class="card settings">
+        <h2>Agent configuration</h2>
+        <label>Agent name
+          <input name="agent_name" required maxlength="60">
+        </label>
+        <label>Greeting (spoken when a call starts)
+          <textarea name="greeting" rows="2" required maxlength="500"></textarea>
+        </label>
+        <label>System prompt
+          <textarea name="system_prompt" rows="18" required maxlength="20000"></textarea>
+        </label>
+        <label>Voice
+          <select id="voice-select"></select>
+        </label>
+        <div class="row">
+          <button class="btn primary" type="submit">Save</button>
+          <button class="btn" type="button" id="reset-btn">Reset to default</button>
+          <span id="settings-msg" class="muted"></span>
+        </div>
+      </form>
+    </section>
+
+    <!-- History -->
+    <section id="view-history" class="view">
+      <div class="history">
+        <div class="card list">
+          <h2>Conversations</h2>
+          <ul id="conv-list"></ul>
+        </div>
+        <div class="card detail">
+          <div class="row spread">
+            <h2 id="detail-title">Select a conversation</h2>
+            <button id="delete-conv" class="btn danger small hidden">Delete</button>
+          </div>
+          <div id="detail" class="transcript"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden" role="alert"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
