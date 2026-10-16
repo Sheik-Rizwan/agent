@@ -1,5 +1,6 @@
-"""FastAPI app: REST API for the voice agent plus the static web UI."""
+"""Application entry point: builds the FastAPI app, mounts the REST API and the web UI."""
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -7,112 +8,54 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException  # noqa: E402
-from fastapi.responses import FileResponse  # noqa: E402
+from fastapi import APIRouter, FastAPI, Request  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
-from pydantic import BaseModel, Field  # noqa: E402
 
-from app import llm, store  # noqa: E402
+from app.controllers import (  # noqa: E402
+    agent_controller,
+    call_controller,
+    conversation_controller,
+    health_controller,
+    plivo_webhook_controller,
+)
+from app.core.database import get_database  # noqa: E402
+from app.core.exceptions import AppError  # noqa: E402
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 STATIC_DIR = Path(__file__).parent / "static"
-MAX_HISTORY_MESSAGES = 40
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    store.init_db()
+    get_database().init_schema()
     yield
 
 
-app = FastAPI(title="Agent", lifespan=lifespan)
+app = FastAPI(
+    title="Agent API",
+    description="Voice AI receptionist powered by Gemini, with phone calls through Plivo.",
+    version="1.1.0",
+    lifespan=lifespan,
+)
 
 
-class SettingsIn(BaseModel):
-    agent_name: str = Field(min_length=1, max_length=60)
-    greeting: str = Field(min_length=1, max_length=500)
-    system_prompt: str = Field(min_length=1, max_length=20000)
+@app.exception_handler(AppError)
+async def app_error_handler(_: Request, exc: AppError):
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
 
 
-class MessageIn(BaseModel):
-    text: str = Field(min_length=1, max_length=2000)
+api = APIRouter(prefix="/api/v1")
+api.include_router(health_controller.router)
+api.include_router(agent_controller.router)
+api.include_router(conversation_controller.router)
+api.include_router(call_controller.router)
+api.include_router(plivo_webhook_controller.router)
+app.include_router(api)
 
 
-def _require_conversation(conversation_id: int) -> None:
-    if not store.conversation_exists(conversation_id):
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
-
-@app.get("/api/health")
-def health():
-    return {"status": "ok", "mode": llm.mode(), "model": llm.model_name()}
-
-
-@app.get("/api/settings")
-def read_settings():
-    return store.get_settings()
-
-
-@app.put("/api/settings")
-def update_settings(body: SettingsIn):
-    return store.save_settings(body.model_dump())
-
-
-@app.post("/api/settings/reset")
-def reset_settings():
-    return store.reset_settings()
-
-
-@app.post("/api/conversations", status_code=201)
-def start_conversation():
-    conversation_id = store.create_conversation()
-    greeting = store.get_settings()["greeting"]
-    store.add_message(conversation_id, "assistant", greeting)
-    return {"id": conversation_id, "greeting": greeting}
-
-
-@app.post("/api/conversations/{conversation_id}/messages")
-async def send_message(conversation_id: int, body: MessageIn):
-    _require_conversation(conversation_id)
-    text = body.text.strip()
-    if not text:
-        raise HTTPException(status_code=422, detail="Message is empty")
-
-    store.add_message(conversation_id, "user", text)
-    history = store.get_messages(conversation_id)[-MAX_HISTORY_MESSAGES:]
-    try:
-        reply = await llm.generate_reply(store.get_settings()["system_prompt"], history)
-    except llm.LLMError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    store.add_message(conversation_id, "assistant", reply)
-    return {"reply": reply}
-
-
-@app.post("/api/conversations/{conversation_id}/end")
-def finish_conversation(conversation_id: int):
-    _require_conversation(conversation_id)
-    store.end_conversation(conversation_id)
-    return {"ok": True}
-
-
-@app.get("/api/conversations")
-def conversations():
-    return store.list_conversations()
-
-
-@app.get("/api/conversations/{conversation_id}")
-def conversation_detail(conversation_id: int):
-    _require_conversation(conversation_id)
-    return {"id": conversation_id, "messages": store.get_messages(conversation_id)}
-
-
-@app.delete("/api/conversations/{conversation_id}")
-def remove_conversation(conversation_id: int):
-    _require_conversation(conversation_id)
-    store.delete_conversation(conversation_id)
-    return {"ok": True}
-
-
-@app.get("/")
+@app.get("/", include_in_schema=False)
 def index():
     return FileResponse(STATIC_DIR / "index.html")
 

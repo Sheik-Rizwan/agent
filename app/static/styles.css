@@ -78,7 +78,14 @@ main { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
   border-radius: var(--radius);
 }
 
-.call-panel { padding: 32px 24px; text-align: center; align-self: start; }
+.side { display: flex; flex-direction: column; gap: 16px; align-self: start; }
+.call-panel { padding: 32px 24px; text-align: center; }
+.phone-panel {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 20px; display: flex; flex-direction: column; gap: 12px;
+}
+.phone-panel h2 { margin: 0; font-size: 16px; }
+.phone-panel p { margin: 0; font-size: 13px; }
 .call-panel h1 { margin: 16px 0 4px; font-size: 24px; }
 .status { color: var(--muted); min-height: 1.4em; margin: 0 0 24px; }
 

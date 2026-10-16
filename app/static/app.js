@@ -128,7 +128,7 @@ function setPhase(phase) {
 async function startCall() {
   $("#start-btn").disabled = true;
   try {
-    const conv = await api("/api/conversations", { method: "POST" });
+    const conv = await api("/api/v1/conversations", { method: "POST" });
     state.convId = conv.id;
     const transcript = $("#transcript");
     transcript.innerHTML = "";
@@ -153,7 +153,7 @@ async function endCall() {
   setPhase("idle");
   renderMessage($("#transcript"), "system", "Call ended");
   if (convId !== null) {
-    try { await api(`/api/conversations/${convId}/end`, { method: "POST" }); }
+    try { await api(`/api/v1/conversations/${convId}/end`, { method: "POST" }); }
     catch (err) { toast(err.message); }
   }
 }
@@ -166,7 +166,7 @@ async function sendText(text) {
   renderMessage($("#transcript"), "user", text);
   setPhase("thinking");
   try {
-    const { reply } = await api(`/api/conversations/${convId}/messages`, {
+    const { reply } = await api(`/api/v1/conversations/${convId}/messages`, {
       method: "POST",
       body: JSON.stringify({ text }),
     });
@@ -301,7 +301,7 @@ function stopListening() {
 // ---------- settings ----------
 
 async function loadSettings() {
-  state.settings = await api("/api/settings");
+  state.settings = await api("/api/v1/agent");
   const form = $("#settings-form");
   for (const key of ["agent_name", "greeting", "system_prompt"]) {
     form.elements[key].value = state.settings[key];
@@ -318,7 +318,7 @@ $("#settings-form").addEventListener("submit", async (event) => {
     system_prompt: form.elements.system_prompt.value,
   };
   try {
-    state.settings = await api("/api/settings", { method: "PUT", body: JSON.stringify(body) });
+    state.settings = await api("/api/v1/agent", { method: "PUT", body: JSON.stringify(body) });
     $("#agent-title").textContent = state.settings.agent_name;
     $("#settings-msg").textContent = "Saved. New calls use this configuration.";
   } catch (err) {
@@ -329,7 +329,7 @@ $("#settings-form").addEventListener("submit", async (event) => {
 $("#reset-btn").addEventListener("click", async () => {
   if (!confirm("Reset the agent name, greeting and prompt to the defaults?")) return;
   try {
-    await api("/api/settings/reset", { method: "POST" });
+    await api("/api/v1/agent/reset", { method: "POST" });
     await loadSettings();
     $("#settings-msg").textContent = "Reset to defaults.";
   } catch (err) {
@@ -346,7 +346,7 @@ $("#voice-select").addEventListener("change", (event) => {
 async function loadHistory() {
   const list = $("#conv-list");
   try {
-    const convs = await api("/api/conversations");
+    const convs = await api("/api/v1/conversations");
     list.innerHTML = "";
     if (!convs.length) {
       list.innerHTML = '<li class="muted">No conversations yet.</li>';
@@ -358,7 +358,8 @@ async function loadHistory() {
       btn.dataset.id = c.id;
       btn.classList.toggle("active", c.id === state.selectedConvId);
       const title = document.createElement("strong");
-      title.textContent = `#${c.id} · ${formatTime(c.started_at)}`;
+      const label = c.channel === "phone" ? `Phone ${c.from_number || ""}`.trim() : "Web";
+      title.textContent = `#${c.id} · ${label} · ${formatTime(c.started_at)}`;
       const preview = document.createElement("span");
       preview.className = "preview";
       preview.textContent = `${c.message_count} messages · ${c.first_user_message || "no caller messages"}`;
@@ -374,12 +375,13 @@ async function loadHistory() {
 
 async function showConversation(id) {
   try {
-    const data = await api(`/api/conversations/${id}`);
+    const data = await api(`/api/v1/conversations/${id}`);
     state.selectedConvId = id;
     document.querySelectorAll("#conv-list button").forEach((b) =>
       b.classList.toggle("active", Number(b.dataset.id) === id)
     );
-    $("#detail-title").textContent = `Conversation #${id}`;
+    const via = data.channel === "phone" ? ` · phone call ${data.from_number || ""} → ${data.to_number || ""}` : " · web";
+    $("#detail-title").textContent = `Conversation #${id}${via}`;
     $("#delete-conv").classList.remove("hidden");
     const detail = $("#detail");
     detail.innerHTML = "";
@@ -393,7 +395,7 @@ $("#delete-conv").addEventListener("click", async () => {
   const id = state.selectedConvId;
   if (id === null || !confirm(`Delete conversation #${id}?`)) return;
   try {
-    await api(`/api/conversations/${id}`, { method: "DELETE" });
+    await api(`/api/v1/conversations/${id}`, { method: "DELETE" });
     state.selectedConvId = null;
     $("#detail").innerHTML = "";
     $("#detail-title").textContent = "Select a conversation";
@@ -401,6 +403,39 @@ $("#delete-conv").addEventListener("click", async () => {
     loadHistory();
   } catch (err) {
     toast(err.message);
+  }
+});
+
+// ---------- phone calls (Plivo) ----------
+
+async function loadTelephony() {
+  try {
+    const status = await api("/api/v1/calls/status");
+    const ready = status.configured && Boolean(status.public_base_url);
+    $("#call-number").disabled = !ready;
+    $("#call-btn").disabled = !ready;
+    $("#phone-hint").textContent = !status.configured
+      ? "Add your Plivo credentials to .env to enable phone calls."
+      : !status.public_base_url
+        ? "Set PUBLIC_BASE_URL in .env (e.g. your ngrok URL) so Plivo can reach this server."
+        : `Calls come from ${status.phone_number}. Callers to that number also reach the agent.`;
+  } catch (err) {
+    $("#phone-hint").textContent = err.message;
+  }
+}
+
+$("#call-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const to = $("#call-number").value.trim();
+  if (!to) return;
+  $("#call-btn").disabled = true;
+  try {
+    await api("/api/v1/calls", { method: "POST", body: JSON.stringify({ to }) });
+    $("#phone-hint").textContent = `Calling ${to}… The transcript will appear in History.`;
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    $("#call-btn").disabled = false;
   }
 });
 
@@ -435,7 +470,7 @@ async function init() {
   }
   setPhase("idle");
   try {
-    const health = await api("/api/health");
+    const health = await api("/api/v1/health");
     const badge = $("#mode-badge");
     if (health.mode === "gemini") {
       badge.textContent = `Live · ${health.model}`;
@@ -445,6 +480,7 @@ async function init() {
       badge.classList.add("demo");
     }
     await loadSettings();
+    await loadTelephony();
   } catch (err) {
     toast(`Cannot reach the server: ${err.message}`);
   }

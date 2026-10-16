@@ -24,25 +24,36 @@
   <main>
     <!-- Talk -->
     <section id="view-talk" class="view active">
-      <div class="call-panel">
-        <div class="orb-wrap">
-          <div id="orb" class="orb idle" aria-hidden="true"></div>
+      <div class="side">
+        <div class="call-panel">
+          <div class="orb-wrap">
+            <div id="orb" class="orb idle" aria-hidden="true"></div>
+          </div>
+          <h1 id="agent-title">Ava</h1>
+          <p id="status" class="status">Press Start call to begin</p>
+          <div class="call-actions">
+            <button id="start-btn" class="btn primary">Start call</button>
+            <button id="mic-btn" class="btn" disabled>Hold to talk</button>
+            <button id="end-btn" class="btn danger" disabled>End call</button>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="handsfree" checked>
+            Hands-free (listen automatically after the agent speaks)
+          </label>
+          <p id="speech-warning" class="warning hidden">
+            Your browser doesn't support speech recognition. Use Chrome or Edge for voice,
+            or type below.
+          </p>
         </div>
-        <h1 id="agent-title">Ava</h1>
-        <p id="status" class="status">Press Start call to begin</p>
-        <div class="call-actions">
-          <button id="start-btn" class="btn primary">Start call</button>
-          <button id="mic-btn" class="btn" disabled>Hold to talk</button>
-          <button id="end-btn" class="btn danger" disabled>End call</button>
-        </div>
-        <label class="toggle">
-          <input type="checkbox" id="handsfree" checked>
-          Hands-free (listen automatically after the agent speaks)
-        </label>
-        <p id="speech-warning" class="warning hidden">
-          Your browser doesn't support speech recognition. Use Chrome or Edge for voice,
-          or type below.
-        </p>
+
+        <form id="call-form" class="phone-panel">
+          <h2>Call a phone</h2>
+          <div class="row">
+            <input id="call-number" type="tel" placeholder="+919876543210" autocomplete="tel" disabled>
+            <button id="call-btn" class="btn primary" type="submit" disabled>Call</button>
+          </div>
+          <p id="phone-hint" class="muted">Checking phone setup…</p>
+        </form>
       </div>
 
       <div class="transcript-panel">
