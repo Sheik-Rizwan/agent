@@ -2,6 +2,8 @@
 
 Talk to an AI receptionist out loud, right in your browser. It listens, thinks with **Google Gemini**, and answers in a natural voice. You can change its personality and knowledge from the UI, and every conversation is saved with a full transcript.
 
+![Agent UI: a voice call with Ava, the dental clinic receptionist](docs/screenshot.png)
+
 The default persona is **Ava**, the receptionist for a dental clinic. She answers questions about hours, prices and location, books appointments, and handles emergencies safely. To turn her into a receptionist for any other business, edit the prompt in the **Agent** tab.
 
 ## Features
