@@ -8,106 +8,188 @@
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo" aria-hidden="true"></span>
-      <span>Agent</span>
-    </div>
-    <nav class="tabs" role="tablist">
-      <button class="tab active" data-view="talk" role="tab">Talk</button>
-      <button class="tab" data-view="settings" role="tab">Agent</button>
-      <button class="tab" data-view="history" role="tab">History</button>
-    </nav>
-    <span id="mode-badge" class="badge">…</span>
-  </header>
+  <!-- Login -->
+  <section id="login-view" class="login-view hidden">
+    <form id="login-form" class="card login-card">
+      <div class="brand"><span class="logo" aria-hidden="true"></span><span>Agent</span></div>
+      <h1>Sign in</h1>
+      <label>Username
+        <input name="username" autocomplete="username" required maxlength="64" autofocus>
+      </label>
+      <label>Password
+        <input name="password" type="password" autocomplete="current-password" required maxlength="256">
+      </label>
+      <button class="btn primary" type="submit">Sign in</button>
+      <p id="login-msg" class="error" role="alert"></p>
+      <div id="setup-hint" class="hint hidden">
+        <strong>No accounts yet.</strong> Create the first admin in a terminal:
+        <code>python -m app.cli create-user admin --role admin</code>
+        or set <code>ADMIN_USERNAME</code> and <code>ADMIN_PASSWORD</code> in <code>.env</code> and restart.
+      </div>
+    </form>
+  </section>
 
-  <main>
-    <!-- Talk -->
-    <section id="view-talk" class="view active">
-      <div class="side">
-        <div class="call-panel">
-          <div class="orb-wrap">
-            <div id="orb" class="orb idle" aria-hidden="true"></div>
+  <!-- App -->
+  <div id="app-shell" class="hidden">
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true"></span>
+        <span>Agent</span>
+      </div>
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-view="talk" role="tab">Talk</button>
+        <button class="tab" data-view="agent" role="tab">Agent</button>
+        <button class="tab" data-view="history" role="tab">History</button>
+        <button class="tab admin-only" data-view="users" role="tab">Users</button>
+        <button class="tab" data-view="account" role="tab">Account</button>
+      </nav>
+      <span id="mode-badge" class="badge">…</span>
+      <span id="user-chip" class="chip"></span>
+      <button id="logout-btn" class="btn small">Log out</button>
+    </header>
+
+    <main>
+      <!-- Talk -->
+      <section id="view-talk" class="view active">
+        <div class="side">
+          <div class="call-panel">
+            <div class="orb-wrap">
+              <div id="orb" class="orb idle" aria-hidden="true"></div>
+            </div>
+            <h1 id="agent-title">Agent</h1>
+            <p id="status" class="status">Press Start call to begin</p>
+            <div class="call-actions">
+              <button id="start-btn" class="btn primary">Start call</button>
+              <button id="mic-btn" class="btn" disabled>Talk</button>
+              <button id="end-btn" class="btn danger" disabled>End call</button>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="handsfree" checked>
+              Hands-free (listen automatically after the agent speaks)
+            </label>
+            <p id="speech-warning" class="warning hidden">
+              Your browser doesn't support speech recognition. Use Chrome or Edge for voice,
+              or type below.
+            </p>
           </div>
-          <h1 id="agent-title">Ava</h1>
-          <p id="status" class="status">Press Start call to begin</p>
-          <div class="call-actions">
-            <button id="start-btn" class="btn primary">Start call</button>
-            <button id="mic-btn" class="btn" disabled>Hold to talk</button>
-            <button id="end-btn" class="btn danger" disabled>End call</button>
+
+          <form id="call-form" class="phone-panel">
+            <h2>Call a phone</h2>
+            <div class="row">
+              <input id="call-number" type="tel" placeholder="+919876543210" autocomplete="tel" maxlength="24" disabled>
+              <button id="call-btn" class="btn primary" type="submit" disabled>Call</button>
+            </div>
+            <p id="phone-hint" class="muted">Checking phone setup…</p>
+          </form>
+        </div>
+
+        <div class="transcript-panel">
+          <div id="transcript" class="transcript" aria-live="polite">
+            <p class="empty">The conversation transcript appears here.</p>
           </div>
-          <label class="toggle">
-            <input type="checkbox" id="handsfree" checked>
-            Hands-free (listen automatically after the agent speaks)
+          <form id="text-form" class="text-form">
+            <input id="text-input" type="text" placeholder="Type a message…" autocomplete="off" maxlength="2000" disabled>
+            <button class="btn primary" type="submit" id="send-btn" disabled>Send</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- Agent configuration (fields are generated from the API response) -->
+      <section id="view-agent" class="view">
+        <form id="agent-form" class="card stack narrow">
+          <h2>Agent configuration</h2>
+          <p class="muted user-only">Only admins can change the agent. You can view it here.</p>
+          <div id="agent-fields" class="stack"></div>
+          <label>Browser voice (this device only)
+            <select id="voice-select"></select>
           </label>
-          <p id="speech-warning" class="warning hidden">
-            Your browser doesn't support speech recognition. Use Chrome or Edge for voice,
-            or type below.
-          </p>
-        </div>
+          <div class="row admin-only">
+            <button class="btn primary" type="submit">Save</button>
+            <button class="btn" type="button" id="reset-btn">Reset to defaults</button>
+            <span id="agent-msg" class="muted"></span>
+          </div>
+        </form>
+      </section>
 
-        <form id="call-form" class="phone-panel">
-          <h2>Call a phone</h2>
+      <!-- History -->
+      <section id="view-history" class="view">
+        <div class="history">
+          <div class="card list">
+            <div class="row spread">
+              <h2>Conversations</h2>
+              <button id="refresh-history" class="btn small" type="button">Refresh</button>
+            </div>
+            <ul id="conv-list"></ul>
+          </div>
+          <div class="card detail">
+            <div class="row spread">
+              <h2 id="detail-title">Select a conversation</h2>
+              <button id="delete-conv" class="btn danger small admin-only hidden">Delete</button>
+            </div>
+            <div id="detail" class="transcript"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Users (admin) -->
+      <section id="view-users" class="view">
+        <div class="stack narrow">
+          <form id="user-form" class="card stack">
+            <h2>Create user</h2>
+            <div class="grid-3">
+              <label>Username
+                <input name="username" required minlength="3" maxlength="32" pattern="[a-z0-9][a-z0-9_.\-]{2,31}"
+                       title="3-32 lowercase letters, numbers, '.', '_' or '-'" autocomplete="off">
+              </label>
+              <label>Password
+                <input name="password" type="password" required maxlength="128" autocomplete="new-password">
+              </label>
+              <label>Role
+                <select name="role">
+                  <option value="user">user: talk, call, view</option>
+                  <option value="admin">admin: also manage agent and users</option>
+                </select>
+              </label>
+            </div>
+            <div class="row">
+              <button class="btn primary" type="submit">Create</button>
+              <span id="user-msg" class="muted"></span>
+            </div>
+          </form>
+          <div class="card stack">
+            <h2>Users</h2>
+            <div class="table-wrap">
+              <table id="users-table">
+                <thead><tr><th>Username</th><th>Role</th><th>Created</th><th>Last login</th><th></th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Account -->
+      <section id="view-account" class="view">
+        <form id="password-form" class="card stack narrow">
+          <h2>Change password</h2>
+          <p class="muted">Your other sessions will be logged out.</p>
+          <label>Current password
+            <input name="current" type="password" required autocomplete="current-password" maxlength="256">
+          </label>
+          <label>New password
+            <input name="new" type="password" required autocomplete="new-password" maxlength="128">
+          </label>
+          <label>Repeat new password
+            <input name="repeat" type="password" required autocomplete="new-password" maxlength="128">
+          </label>
           <div class="row">
-            <input id="call-number" type="tel" placeholder="+919876543210" autocomplete="tel" disabled>
-            <button id="call-btn" class="btn primary" type="submit" disabled>Call</button>
+            <button class="btn primary" type="submit">Change password</button>
+            <span id="password-msg" class="muted"></span>
           </div>
-          <p id="phone-hint" class="muted">Checking phone setup…</p>
         </form>
-      </div>
-
-      <div class="transcript-panel">
-        <div id="transcript" class="transcript" aria-live="polite">
-          <p class="empty">The conversation transcript appears here.</p>
-        </div>
-        <form id="text-form" class="text-form">
-          <input id="text-input" type="text" placeholder="Type a message…" autocomplete="off" disabled>
-          <button class="btn primary" type="submit" id="send-btn" disabled>Send</button>
-        </form>
-      </div>
-    </section>
-
-    <!-- Settings -->
-    <section id="view-settings" class="view">
-      <form id="settings-form" class="card settings">
-        <h2>Agent configuration</h2>
-        <label>Agent name
-          <input name="agent_name" required maxlength="60">
-        </label>
-        <label>Greeting (spoken when a call starts)
-          <textarea name="greeting" rows="2" required maxlength="500"></textarea>
-        </label>
-        <label>System prompt
-          <textarea name="system_prompt" rows="18" required maxlength="20000"></textarea>
-        </label>
-        <label>Voice
-          <select id="voice-select"></select>
-        </label>
-        <div class="row">
-          <button class="btn primary" type="submit">Save</button>
-          <button class="btn" type="button" id="reset-btn">Reset to default</button>
-          <span id="settings-msg" class="muted"></span>
-        </div>
-      </form>
-    </section>
-
-    <!-- History -->
-    <section id="view-history" class="view">
-      <div class="history">
-        <div class="card list">
-          <h2>Conversations</h2>
-          <ul id="conv-list"></ul>
-        </div>
-        <div class="card detail">
-          <div class="row spread">
-            <h2 id="detail-title">Select a conversation</h2>
-            <button id="delete-conv" class="btn danger small hidden">Delete</button>
-          </div>
-          <div id="detail" class="transcript"></div>
-        </div>
-      </div>
-    </section>
-  </main>
+      </section>
+    </main>
+  </div>
 
   <div id="toast" class="toast hidden" role="alert"></div>
   <script src="/static/app.js"></script>

@@ -1,0 +1,321 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Agent Voice Receptionist - System Architecture",
+    "locale": "en",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    {
+      "id": "browser",
+      "type": "frontend",
+      "label": "Browser UI",
+      "sublabel": "app.js voice loop",
+      "pos": [
+        40,
+        120
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "caller",
+      "type": "external",
+      "label": "Plivo Telephony",
+      "sublabel": "phone caller",
+      "pos": [
+        40,
+        400
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "middleware",
+      "type": "security",
+      "label": "Middleware",
+      "sublabel": "Origin check + headers",
+      "pos": [
+        240,
+        260
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "authguard",
+      "type": "security",
+      "label": "Auth guards",
+      "sublabel": "get_current_user / require_admin",
+      "pos": [
+        450,
+        120
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "sigguard",
+      "type": "security",
+      "label": "Plivo signature",
+      "sublabel": "X-Plivo-Signature-V2",
+      "pos": [
+        450,
+        400
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "controllers",
+      "type": "backend",
+      "label": "Controllers",
+      "sublabel": "routers under /api/v1",
+      "pos": [
+        710,
+        260
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "services",
+      "type": "backend",
+      "label": "Services",
+      "sublabel": "Conversation, LLM, Plivo, Auth",
+      "pos": [
+        910,
+        260
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "gemini",
+      "type": "cloud",
+      "label": "Gemini API",
+      "sublabel": "generateContent",
+      "pos": [
+        1150,
+        120
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "plivoapi",
+      "type": "cloud",
+      "label": "Plivo REST API",
+      "sublabel": "Account/{id}/Call/",
+      "pos": [
+        1150,
+        400
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "repos",
+      "type": "backend",
+      "label": "Repositories",
+      "sublabel": "JsonFile store",
+      "pos": [
+        910,
+        560
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "data",
+      "type": "database",
+      "label": "data/ JSON files",
+      "sublabel": "users, sessions, agent, conversations/, call_index",
+      "pos": [
+        560,
+        560
+      ],
+      "size": [
+        270,
+        64
+      ]
+    },
+    {
+      "id": "defaults",
+      "type": "database",
+      "label": "agent.default.json",
+      "sublabel": "config/ (read-only)",
+      "pos": [
+        1150,
+        560
+      ],
+      "size": [
+        150,
+        64
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "FastAPI app (app/main.py)",
+      "wraps": [
+        "middleware",
+        "authguard",
+        "sigguard",
+        "controllers",
+        "services",
+        "repos"
+      ]
+    },
+    {
+      "kind": "security-group",
+      "label": "Auth boundary: login required",
+      "wraps": [
+        "authguard"
+      ]
+    },
+    {
+      "kind": "security-group",
+      "label": "Webhook boundary: signed by Plivo",
+      "wraps": [
+        "sigguard"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "browser-https",
+      "from": "browser",
+      "to": "middleware",
+      "label": "fetch + session cookie",
+      "variant": "emphasis"
+    },
+    {
+      "id": "caller-webhook",
+      "from": "caller",
+      "to": "middleware",
+      "label": "webhook POST"
+    },
+    {
+      "id": "mw-api",
+      "from": "middleware",
+      "to": "authguard",
+      "label": "/api/v1/*",
+      "variant": "security"
+    },
+    {
+      "id": "mw-webhook",
+      "from": "middleware",
+      "to": "sigguard",
+      "label": "/webhooks/plivo/*",
+      "variant": "security"
+    },
+    {
+      "id": "auth-ctrl",
+      "from": "authguard",
+      "to": "controllers",
+      "label": "user + role",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "sig-ctrl",
+      "from": "sigguard",
+      "to": "controllers",
+      "label": "verified",
+      "fromSide": "top",
+      "toSide": "left"
+    },
+    {
+      "id": "ctrl-svc",
+      "from": "controllers",
+      "to": "services",
+      "label": "Depends()",
+      "variant": "emphasis"
+    },
+    {
+      "id": "svc-gemini",
+      "from": "services",
+      "to": "gemini",
+      "label": "HTTPS x-goog-api-key",
+      "fromSide": "top",
+      "toSide": "left"
+    },
+    {
+      "id": "svc-plivo",
+      "from": "services",
+      "to": "plivoapi",
+      "label": "create call",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "svc-repo",
+      "from": "services",
+      "to": "repos",
+      "variant": "emphasis"
+    },
+    {
+      "id": "repo-data",
+      "from": "repos",
+      "to": "data",
+      "label": "atomic write"
+    },
+    {
+      "id": "repo-defaults",
+      "from": "repos",
+      "to": "defaults",
+      "label": "load defaults",
+      "variant": "dashed",
+      "labelDy": 56
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Two entry points",
+      "items": [
+        "Browser UI: cookie session (SameSite=Strict) or Bearer token",
+        "Plivo: unauthenticated webhooks, HMAC-SHA256 signature checked per request"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Layering",
+      "items": [
+        "Controllers -> Services -> Repositories wired by FastAPI Depends()",
+        "LLMService falls back to keyword demo replies without GEMINI_API_KEY"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Storage",
+      "items": [
+        "JsonFile: temp file + fsync + rename, per-file lock, 0600 files",
+        "Agent overrides in data/agent.json over config/agent.default.json"
+      ]
+    }
+  ]
+}

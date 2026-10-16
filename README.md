@@ -1,21 +1,31 @@
 # Agent: a voice AI receptionist for the browser and the phone
 
-Talk to an AI receptionist out loud, in your browser or on a **real phone call**. It listens, thinks with **Google Gemini**, and answers in a natural voice. Phone calls go through **Plivo**. You can change the agent's personality and knowledge from the UI, and every conversation is saved with a full transcript.
+Talk to an AI receptionist out loud, in your browser or on a **real phone call**. It listens, thinks with **Google Gemini**, and answers in a natural voice. Phone calls go through **Plivo**. Everything is behind a login with admin and user roles, all data is stored as readable **JSON files**, and the agent's persona is edited from the UI or a JSON file, not hardcoded.
 
 ![Agent UI: a voice call with Ava, the dental clinic receptionist](docs/screenshot.png)
-
-The default persona is **Ava**, the receptionist for a dental clinic. She answers questions about hours, prices and location, books appointments, and handles emergencies safely. To turn her into a receptionist for any other business, edit the prompt in the **Agent** tab.
 
 ## Features
 
 - **Voice conversation in the browser.** Speech-to-text and text-to-speech run in the browser. Hands-free mode starts listening again after each reply, and you can interrupt the agent mid-sentence.
-- **Phone calls through Plivo.** Start an outbound call from the UI or the REST API, or let people call your Plivo number. Callers can talk over the agent, silence is handled politely, and every call is transcribed into History.
-- **Gemini-powered.** Uses the Gemini API (`gemini-2.5-flash` by default). The current date and time are added to every request, so the agent can say things like "tomorrow" correctly.
-- **Configurable agent.** Change the name, greeting, system prompt and voice without touching code.
-- **Versioned REST API.** Everything lives under `/api/v1`, with interactive docs at `/docs`.
-- **Layered architecture.** Controllers, services and repositories are separate, so each layer can be tested and swapped on its own.
-- **Demo mode.** With no API key, the agent gives canned replies, so the UI can be shown anywhere.
-- **Secure webhooks.** Plivo requests are checked against their HMAC signature.
+- **Phone calls through Plivo.** Start outbound calls from the UI or REST API, and receive inbound calls on your Plivo number. Silence is handled politely, and every call is transcribed.
+- **Gemini-powered,** with an offline **demo mode** when there's no API key.
+- **Login and roles.** Admins manage users and the agent; users talk, call and view history. Admins can create users, delete them and reset passwords, and everyone can change their own password.
+- **Secure by default.** scrypt password hashing, hashed session tokens, HttpOnly SameSite cookies, login rate limiting, CSRF Origin checks, a strict Content-Security-Policy, signed Plivo webhooks, and private (0600) data files.
+- **JSON storage.** One file per conversation, plus `users.json`, `sessions.json` and `agent.json`. Writes are atomic and locked so nothing is lost.
+- **Nothing hardcoded.** Persona, phone phrases and demo replies live in `config/agent.default.json`; every limit and timeout is an environment variable.
+- **Clean architecture.** Controllers → services → repositories, a versioned REST API (`/api/v1`) and interactive docs at `/docs`.
+- **Well tested.** 209 automated tests, plus an end-to-end browser test.
+
+## Documentation
+
+| Read this | For |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, folders, JSON data files, security model, roles |
+| [docs/WORKFLOWS.md](docs/WORKFLOWS.md) | Step-by-step flows (web call, phone call, login, lifecycle, users, agent config), each step mapped to the code |
+| [docs/diagrams/](docs/diagrams/) | Interactive diagrams: open the `.html` files in a browser |
+| http://localhost:8000/docs | Live REST API reference (when the server is running) |
+
+Each Python module also starts with a docstring explaining what it does and why.
 
 ## Quick start
 
@@ -28,113 +38,94 @@ python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-cp .env.example .env               # then fill in your keys
+cp .env.example .env               # then fill in what you need (see below)
+python -m app.cli create-user admin --role admin    # first admin; prompts for a password
 uvicorn app.main:app --reload --port 8000
 ```
 
-Open http://localhost:8000, press **Start call**, and allow microphone access. The API docs are at http://localhost:8000/docs.
+Open http://localhost:8000 and sign in. Press **Start call** and allow microphone access.
 
-Get a free Gemini API key at https://aistudio.google.com/apikey. If you leave `GEMINI_API_KEY` empty, the app runs in demo mode.
+You can also create the first admin by setting `ADMIN_USERNAME` and `ADMIN_PASSWORD` in `.env`. They're used only when no users exist yet.
+
+Get a free Gemini API key at https://aistudio.google.com/apikey and put it in `GEMINI_API_KEY`. Without one, the app runs in demo mode.
 
 ## Phone calls with Plivo
 
-1. **Get credentials.** Create a Plivo account and copy the **Auth ID** and **Auth Token** from the console dashboard. Buy or rent a voice-enabled number.
-2. **Expose the server.** Plivo has to reach your server over the internet. For local development:
-   ```bash
-   ngrok http 8000
-   ```
-3. **Fill in `.env`:**
-   ```env
-   PLIVO_AUTH_ID=MAxxxxxxxxxxxxxxxxxx
-   PLIVO_AUTH_TOKEN=your-auth-token
-   PLIVO_PHONE_NUMBER=+918000000000
-   PUBLIC_BASE_URL=https://your-subdomain.ngrok-free.app
-   ```
-   Restart the server after changing `.env`.
-4. **Outbound calls.** Enter a number in **Call a phone** in the UI, or:
+1. Create a Plivo account. Copy the **Auth ID** and **Auth Token**, and get a voice-enabled number.
+2. Expose your server: `ngrok http 8000`.
+3. In `.env`, set `PLIVO_AUTH_ID`, `PLIVO_AUTH_TOKEN`, `PLIVO_PHONE_NUMBER`, `PUBLIC_BASE_URL` (your ngrok URL) and `COOKIE_SECURE=true`. Restart the server.
+4. **Outbound:** use **Call a phone** in the UI, or:
    ```bash
    curl -X POST http://localhost:8000/api/v1/calls \
+        -H "Authorization: Bearer <token from /api/v1/auth/login>" \
         -H "Content-Type: application/json" -d '{"to": "+919876543210"}'
    ```
-5. **Inbound calls (optional).** In the Plivo console, create a Voice **Application** with:
-   - Answer URL: `https://<PUBLIC_BASE_URL>/api/v1/webhooks/plivo/answer` (method POST)
-   - Hangup URL: `https://<PUBLIC_BASE_URL>/api/v1/webhooks/plivo/hangup` (method POST)
+5. **Inbound (optional):** in the Plivo console, create a Voice Application. Set the answer URL to `<PUBLIC_BASE_URL>/api/v1/webhooks/plivo/answer` and the hangup URL to `<PUBLIC_BASE_URL>/api/v1/webhooks/plivo/hangup` (both POST), then assign it to your number.
 
-   Then assign the application to your Plivo number.
+> Trial Plivo accounts can only call numbers verified in the console.
 
-**How a call works:** Plivo requests the *answer* webhook. The server replies with Plivo XML that speaks the greeting inside `<GetInput inputType="speech">`. Plivo transcribes what the caller says and posts it to the *speech* webhook. The server asks Gemini for a reply and returns more XML that speaks it and listens again. If the caller stays silent, the agent asks again twice, then hangs up politely.
+## Configuration
 
-> On trial accounts, Plivo can only call numbers you have verified in the console.
+Every setting is an environment variable with a sensible default. The full list, with comments, is in [`.env.example`](.env.example).
 
-## Configuration (`.env`)
+| Group | Variables |
+|---|---|
+| First admin | `ADMIN_USERNAME`, `ADMIN_PASSWORD` |
+| Gemini | `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_TEMPERATURE`, `GEMINI_MAX_OUTPUT_TOKENS`, `GEMINI_TIMEOUT_SECONDS`, `LLM_MAX_HISTORY_MESSAGES`, `AGENT_TIMEZONE` |
+| Plivo | `PLIVO_AUTH_ID`, `PLIVO_AUTH_TOKEN`, `PLIVO_PHONE_NUMBER`, `PUBLIC_BASE_URL`, `PLIVO_VOICE`, `PLIVO_LANGUAGE`, `PLIVO_MAX_SILENT_TURNS`, `PLIVO_VALIDATE_SIGNATURE` |
+| Security | `SESSION_TTL_HOURS`, `COOKIE_SECURE`, `PASSWORD_MIN_LENGTH`, `LOGIN_MAX_ATTEMPTS`, `LOGIN_LOCKOUT_MINUTES`, `ENABLE_API_DOCS` |
+| Storage | `DATA_DIR`, `AGENT_DEFAULTS_PATH` |
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `GEMINI_API_KEY` | *(empty = demo mode)* | Your Gemini API key |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Any Gemini model that supports `generateContent` |
-| `AGENT_TIMEZONE` | `Asia/Kolkata` | Time zone for the date and time given to the agent |
-| `PLIVO_AUTH_ID` | | Plivo Auth ID |
-| `PLIVO_AUTH_TOKEN` | | Plivo Auth Token. Also used to verify webhook signatures |
-| `PLIVO_PHONE_NUMBER` | | Your Plivo number, used as caller ID |
-| `PUBLIC_BASE_URL` | | Public HTTPS URL of this server, e.g. your ngrok URL |
-| `PLIVO_VOICE` | `WOMAN` | Voice for `<Speak>` |
-| `PLIVO_LANGUAGE` | `en-US` | Language for speech output and recognition |
-| `PLIVO_VALIDATE_SIGNATURE` | `true` | Reject webhooks without a valid Plivo signature |
-| `DATABASE_PATH` | `data/agent.db` | SQLite file for settings and transcripts |
+The agent's persona, greeting, prompt, phone phrases and demo replies are in [`config/agent.default.json`](config/agent.default.json). Admins can override any of them in the **Agent** tab.
 
-## Architecture
+## REST API (`/api/v1`)
 
-```
- Browser UI ──REST──────┐
-                        ▼
- Plivo ──webhooks──▶ Controllers ──▶ Services ──▶ Repositories ──▶ SQLite
-                                        │
-                                        ├──▶ Gemini API (agent replies)
-                                        └──▶ Plivo REST API (outbound calls)
-```
+Log in with `POST /auth/login`. The browser gets an HttpOnly cookie; API clients send `Authorization: Bearer <token>`.
 
-```
-app/
-├── main.py                 App factory: routers, error handling, static UI
-├── dependencies.py         Wires repositories → services → controllers (FastAPI Depends)
-├── schemas.py              Request and response models
-├── core/                   Config, database, domain exceptions
-├── controllers/            HTTP layer: REST endpoints and Plivo webhooks
-├── services/               Business logic: agent, conversations, Gemini, Plivo
-├── repositories/           Data access (SQLite)
-└── static/                 Web UI (HTML, CSS, JS)
-```
+| Method | Path | Who | Description |
+|---|---|---|---|
+| GET | `/health` | public | Liveness probe |
+| GET | `/auth/setup-status` | public | Whether any users exist |
+| POST | `/auth/login` | public | Log in and get a session |
+| POST | `/auth/logout` | any | End the session |
+| GET | `/auth/me` | user | The current user |
+| POST | `/auth/password` | user | Change your own password |
+| GET | `/status` | user | LLM mode, model and telephony status |
+| GET | `/agent` | user | Agent configuration |
+| PUT | `/agent` | admin | Update any agent fields |
+| POST | `/agent/reset` | admin | Restore the defaults |
+| GET / POST | `/conversations` | user | List conversations, or start a web conversation |
+| GET | `/conversations/{id}` | user | Transcript |
+| DELETE | `/conversations/{id}` | admin | Delete a conversation |
+| POST | `/conversations/{id}/messages` | user | Send a message and get the reply |
+| POST | `/conversations/{id}/end` | user | End a conversation |
+| GET | `/calls/status` | user | Plivo configuration |
+| POST | `/calls` | user | Place a phone call |
+| GET / POST | `/users` | admin | List or create users |
+| DELETE | `/users/{username}` | admin | Delete a user |
+| PUT | `/users/{username}/password` | admin | Reset a user's password |
+| POST | `/webhooks/plivo/answer`, `/speech`, `/hangup` | Plivo signature | Call control |
 
-The browser and the phone use the same `ConversationService`, so a web chat and a phone call behave identically and both appear in History.
-
-### REST API (`/api/v1`)
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/health` | Status, LLM mode (`gemini`/`demo`), model and telephony status |
-| GET / PUT | `/agent` | Read or update the agent name, greeting and prompt |
-| POST | `/agent/reset` | Restore the default agent |
-| POST | `/conversations` | Start a web conversation and return the greeting |
-| GET | `/conversations` | List conversations (web and phone) |
-| GET / DELETE | `/conversations/{id}` | Get or delete a transcript |
-| POST | `/conversations/{id}/messages` | Send a message and get the agent's reply |
-| POST | `/conversations/{id}/end` | Mark a conversation as ended |
-| GET | `/calls/status` | Whether Plivo is configured |
-| POST | `/calls` | Place an outbound phone call: `{"to": "+919876543210"}` |
-| POST | `/webhooks/plivo/answer` | Plivo: call answered |
-| POST | `/webhooks/plivo/speech` | Plivo: caller speech transcribed |
-| POST | `/webhooks/plivo/hangup` | Plivo: call ended |
-
-Errors return JSON `{"detail": "..."}` with status `404`, `422`, `403` (bad webhook signature), `502` (Gemini or Plivo failed) or `503` (feature not configured).
+Errors are JSON `{"detail": "..."}` with status `401` (not logged in), `403` (forbidden), `404`, `409` (conflict), `422` (invalid input), `429` (too many logins), `502` (Gemini or Plivo failed) or `503` (not configured).
 
 ## Tests
 
 ```bash
 pip install -r requirements-dev.txt
-pytest
+pytest          # 209 tests, about 25 seconds, no keys or network needed
+ruff check app tests
 ```
 
-29 tests cover the REST API, the Gemini request format, and the full Plivo call flow: placing calls, the XML returned at each step, silence handling, hangups and signature checks. External APIs are replaced by a mocked HTTP transport, so no keys are needed.
+The tests cover:
+- authentication: login, logout, expiry, Bearer tokens, rate limiting and lockout expiry
+- permissions on every endpoint, and user management edge cases
+- conversation edge cases: invalid ids, path traversal, concurrency, corrupt files, ended conversations
+- agent config validation and custom defaults files
+- the full Plivo call flow and signature checks
+- security headers and CSRF
+- config parsing, the JSON store, the CLI, and Gemini error paths
+
+Gemini and Plivo are replaced by a mock HTTP transport.
 
 ## Roadmap
 

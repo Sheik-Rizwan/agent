@@ -2,6 +2,12 @@
 
 Flow: answer -> greet and listen -> speech -> reply and listen -> ... -> hangup.
 Plivo transcribes the caller and sends the text in the `Speech` parameter.
+
+These endpoints are not behind login (Plivo can't log in); instead every request
+must carry a valid Plivo signature (see verify_plivo_signature).
+
+All spoken phone messages come from the agent configuration (phone_* fields),
+and the silence limit from PLIVO_MAX_SILENT_TURNS.
 """
 
 import logging
@@ -10,17 +16,12 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from app.core.config import Config, get_config
 from app.core.exceptions import ForbiddenError, NotConfiguredError, UpstreamError
-from app.dependencies import get_conversation_service, get_plivo_service
+from app.dependencies import get_agent_service, get_conversation_service, get_plivo_service
+from app.services.agent_service import AgentService
 from app.services.conversation_service import ConversationService
 from app.services.plivo_service import PlivoService
 
 logger = logging.getLogger(__name__)
-
-MAX_SILENT_TURNS = 2
-NOT_HEARD_PROMPT = "Sorry, I didn't catch that. Could you say it again?"
-GOODBYE_SILENT = "I still can't hear you, so I'll end the call now. Please call again anytime. Goodbye."
-TECHNICAL_ISSUE = "Sorry, I'm having a technical problem. Could you repeat that?"
-UNKNOWN_CALL = "Sorry, this call could not be found. Goodbye."
 
 
 def _public_url(request: Request, config: Config) -> str:
@@ -55,17 +56,18 @@ router = APIRouter(
 
 
 async def _params(request: Request) -> dict[str, str]:
+    params = dict(request.query_params)
     if request.method == "POST":
         form = await request.form()
-        return {k: str(v) for k, v in form.items()}
-    return dict(request.query_params)
+        params.update({k: str(v) for k, v in form.items()})
+    return params
 
 
 def _xml(body: str) -> Response:
     return Response(content=body, media_type="application/xml")
 
 
-def _speech_url(request: Request, config: Config, conversation_id: int, silent_turns: int) -> str:
+def _speech_url(request: Request, config: Config, conversation_id: str, silent_turns: int) -> str:
     base = config.public_base_url or str(request.base_url).rstrip("/")
     return f"{base}/api/v1/webhooks/plivo/speech?conversation_id={conversation_id}&silent={silent_turns}"
 
@@ -74,6 +76,7 @@ def _speech_url(request: Request, config: Config, conversation_id: int, silent_t
 async def answer(
     request: Request,
     config: Config = Depends(get_config),
+    agent: AgentService = Depends(get_agent_service),
     conversations: ConversationService = Depends(get_conversation_service),
     plivo: PlivoService = Depends(get_plivo_service),
 ):
@@ -83,7 +86,7 @@ async def answer(
     if existing:
         # Plivo retried the answer webhook; continue the same conversation.
         conversation = existing
-        greeting = conversations.greeting()
+        greeting = agent.get()["greeting"]
     else:
         conversation, greeting = conversations.start(
             channel="phone",
@@ -97,30 +100,33 @@ async def answer(
 @router.post("/speech")
 async def speech(
     request: Request,
-    conversation_id: int,
+    conversation_id: str,
     silent: int = 1,
     config: Config = Depends(get_config),
+    agent: AgentService = Depends(get_agent_service),
     conversations: ConversationService = Depends(get_conversation_service),
     plivo: PlivoService = Depends(get_plivo_service),
 ):
-    """`silent` is how many silent turns in a row this request represents if no speech arrived."""
+    """`silent` = how many silent turns in a row this request represents if no speech arrived."""
+    messages = agent.get()
     if not conversations.exists(conversation_id):
-        return _xml(plivo.hangup_xml(UNKNOWN_CALL))
+        return _xml(plivo.hangup_xml(messages["phone_unknown_call"]))
 
     params = await _params(request)
     text = (params.get("Speech") or "").strip()
 
     if not text:
-        if silent > MAX_SILENT_TURNS:
+        if silent > config.plivo_max_silent_turns:
             conversations.end(conversation_id)
-            return _xml(plivo.hangup_xml(GOODBYE_SILENT))
-        return _xml(plivo.listen_xml(NOT_HEARD_PROMPT, _speech_url(request, config, conversation_id, silent + 1)))
+            return _xml(plivo.hangup_xml(messages["phone_goodbye_silent"]))
+        next_url = _speech_url(request, config, conversation_id, silent + 1)
+        return _xml(plivo.listen_xml(messages["phone_not_heard"], next_url))
 
     try:
         reply = await conversations.reply(conversation_id, text)
     except UpstreamError as exc:
         logger.error("LLM failed during call %s: %s", conversation_id, exc.message)
-        reply = TECHNICAL_ISSUE
+        reply = messages["phone_technical_issue"]
     return _xml(plivo.listen_xml(reply, _speech_url(request, config, conversation_id, 1)))
 
 

@@ -1,14 +1,14 @@
-"""REST endpoints for phone calls made through Plivo."""
+"""REST endpoints for phone calls made through Plivo. Any logged-in user."""
 
 from fastapi import APIRouter, Depends
 
 from app.core.config import Config, get_config
 from app.core.exceptions import NotConfiguredError
-from app.dependencies import get_plivo_service
+from app.dependencies import get_current_user, get_plivo_service
 from app.schemas import CallIn, CallOut, TelephonyStatus
 from app.services.plivo_service import PlivoService
 
-router = APIRouter(prefix="/calls", tags=["calls"])
+router = APIRouter(prefix="/calls", tags=["calls"], dependencies=[Depends(get_current_user)])
 
 
 @router.get("/status", response_model=TelephonyStatus)

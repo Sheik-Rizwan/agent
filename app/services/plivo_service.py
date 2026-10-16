@@ -13,7 +13,7 @@ from app.core.config import Config
 from app.core.exceptions import NotConfiguredError, UpstreamError, ValidationError
 
 PLIVO_API = "https://api.plivo.com/v1/Account/{auth_id}/Call/"
-E164 = re.compile(r"^\+?[1-9]\d{6,14}$")
+E164 = re.compile(r"^\+?[1-9]\d{7,14}$")  # 8-15 digits, no leading 0
 
 
 def normalize_number(number: str) -> str:

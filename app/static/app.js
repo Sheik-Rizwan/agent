@@ -13,14 +13,25 @@ const state = {
   utterance: null, // keep a reference so Chrome doesn't garbage-collect it mid-speech
   noSpeechRetries: 0,
   settings: null,
+  user: null,
   selectedConvId: null,
   turn: 0, // bumped on every new action so stale async callbacks can bail out
 };
 
 // ---------- helpers ----------
 
+class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+
+// All API calls go through here. The session cookie is HttpOnly, so the page
+// never sees the token; a 401 anywhere means "show the login screen".
 async function api(path, options = {}) {
   const res = await fetch(path, {
+    credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     ...options,
   });
@@ -29,17 +40,19 @@ async function api(path, options = {}) {
   if (!res.ok) {
     const detail = data && data.detail;
     const message = Array.isArray(detail)
-      ? detail.map((d) => d.msg).join("; ")
+      ? detail.map((d) => d.msg.replace(/^Value error, /, "")).join("; ")
       : detail || `Request failed (${res.status})`;
-    throw new Error(message);
+    if (res.status === 401 && !options.allowUnauthorized) showLogin(message);
+    throw new ApiError(message, res.status);
   }
   return data;
 }
 
 let toastTimer;
-function toast(message) {
+function toast(message, kind = "error") {
   const el = $("#toast");
   el.textContent = message;
+  el.classList.toggle("ok", kind === "ok");
   el.classList.remove("hidden");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.add("hidden"), 6000);
@@ -70,9 +83,14 @@ document.querySelectorAll(".tab").forEach((tab) => {
     document.querySelectorAll(".view").forEach((v) =>
       v.classList.toggle("active", v.id === `view-${tab.dataset.view}`)
     );
-    if (tab.dataset.view === "history") loadHistory();
+    const loaders = { history: loadHistory, users: loadUsers, agent: loadAgent };
+    if (loaders[tab.dataset.view]) loaders[tab.dataset.view]();
   });
 });
+
+function showView(name) {
+  document.querySelector(`.tab[data-view="${name}"]`).click();
+}
 
 // ---------- transcript ----------
 
@@ -153,7 +171,7 @@ async function endCall() {
   setPhase("idle");
   renderMessage($("#transcript"), "system", "Call ended");
   if (convId !== null) {
-    try { await api(`/api/v1/conversations/${convId}/end`, { method: "POST" }); }
+    try { await api(`/api/v1/conversations/${encodeURIComponent(convId)}/end`, { method: "POST" }); }
     catch (err) { toast(err.message); }
   }
 }
@@ -166,7 +184,7 @@ async function sendText(text) {
   renderMessage($("#transcript"), "user", text);
   setPhase("thinking");
   try {
-    const { reply } = await api(`/api/v1/conversations/${convId}/messages`, {
+    const { reply } = await api(`/api/v1/conversations/${encodeURIComponent(convId)}/messages`, {
       method: "POST",
       body: JSON.stringify({ text }),
     });
@@ -298,40 +316,61 @@ function stopListening() {
   }
 }
 
-// ---------- settings ----------
+// ---------- agent configuration (form generated from the API) ----------
 
-async function loadSettings() {
-  state.settings = await api("/api/v1/agent");
-  const form = $("#settings-form");
-  for (const key of ["agent_name", "greeting", "system_prompt"]) {
-    form.elements[key].value = state.settings[key];
-  }
-  $("#agent-title").textContent = state.settings.agent_name;
+// Human-readable label for a config key, e.g. "phone_not_heard" -> "Phone not heard".
+function labelFor(key) {
+  const text = key.replace(/_/g, " ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-$("#settings-form").addEventListener("submit", async (event) => {
+async function loadAgent() {
+  state.settings = await api("/api/v1/agent");
+  $("#agent-title").textContent = state.settings.agent_name || "Agent";
+  renderAgentForm(state.settings);
+}
+
+function renderAgentForm(settings) {
+  const container = $("#agent-fields");
+  container.innerHTML = "";
+  const readOnly = !isAdmin();
+  for (const [key, value] of Object.entries(settings)) {
+    const label = document.createElement("label");
+    label.textContent = labelFor(key);
+    const short = key.endsWith("name");
+    const field = document.createElement(short ? "input" : "textarea");
+    field.name = key;
+    field.value = value;
+    field.required = true;
+    field.maxLength = short ? 60 : 20000;
+    field.readOnly = readOnly;
+    if (!short) field.rows = key === "system_prompt" ? 16 : 2;
+    label.appendChild(field);
+    container.appendChild(label);
+  }
+}
+
+$("#agent-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const form = event.target;
-  const body = {
-    agent_name: form.elements.agent_name.value,
-    greeting: form.elements.greeting.value,
-    system_prompt: form.elements.system_prompt.value,
-  };
+  const body = {};
+  for (const field of $("#agent-fields").querySelectorAll("input, textarea")) {
+    body[field.name] = field.value;
+  }
   try {
     state.settings = await api("/api/v1/agent", { method: "PUT", body: JSON.stringify(body) });
     $("#agent-title").textContent = state.settings.agent_name;
-    $("#settings-msg").textContent = "Saved. New calls use this configuration.";
+    $("#agent-msg").textContent = "Saved. New calls use this configuration.";
   } catch (err) {
     toast(err.message);
   }
 });
 
 $("#reset-btn").addEventListener("click", async () => {
-  if (!confirm("Reset the agent name, greeting and prompt to the defaults?")) return;
+  if (!confirm("Reset every agent field to the defaults from config/agent.default.json?")) return;
   try {
     await api("/api/v1/agent/reset", { method: "POST" });
-    await loadSettings();
-    $("#settings-msg").textContent = "Reset to defaults.";
+    await loadAgent();
+    $("#agent-msg").textContent = "Reset to defaults.";
   } catch (err) {
     toast(err.message);
   }
@@ -343,13 +382,20 @@ $("#voice-select").addEventListener("change", (event) => {
 
 // ---------- history ----------
 
+function shortId(id) {
+  return id.slice(0, 8);
+}
+
 async function loadHistory() {
   const list = $("#conv-list");
   try {
     const convs = await api("/api/v1/conversations");
     list.innerHTML = "";
     if (!convs.length) {
-      list.innerHTML = '<li class="muted">No conversations yet.</li>';
+      const li = document.createElement("li");
+      li.className = "muted";
+      li.textContent = "No conversations yet.";
+      list.appendChild(li);
       return;
     }
     convs.forEach((c) => {
@@ -357,9 +403,9 @@ async function loadHistory() {
       const btn = document.createElement("button");
       btn.dataset.id = c.id;
       btn.classList.toggle("active", c.id === state.selectedConvId);
+      const label = c.channel === "phone" ? `Phone ${c.from_number || ""}`.trim() : `Web · ${c.created_by || "?"}`;
       const title = document.createElement("strong");
-      const label = c.channel === "phone" ? `Phone ${c.from_number || ""}`.trim() : "Web";
-      title.textContent = `#${c.id} · ${label} · ${formatTime(c.started_at)}`;
+      title.textContent = `${label} · ${formatTime(c.started_at)}`;
       const preview = document.createElement("span");
       preview.className = "preview";
       preview.textContent = `${c.message_count} messages · ${c.first_user_message || "no caller messages"}`;
@@ -375,13 +421,15 @@ async function loadHistory() {
 
 async function showConversation(id) {
   try {
-    const data = await api(`/api/v1/conversations/${id}`);
+    const data = await api(`/api/v1/conversations/${encodeURIComponent(id)}`);
     state.selectedConvId = id;
     document.querySelectorAll("#conv-list button").forEach((b) =>
-      b.classList.toggle("active", Number(b.dataset.id) === id)
+      b.classList.toggle("active", b.dataset.id === id)
     );
-    const via = data.channel === "phone" ? ` · phone call ${data.from_number || ""} → ${data.to_number || ""}` : " · web";
-    $("#detail-title").textContent = `Conversation #${id}${via}`;
+    const via = data.channel === "phone"
+      ? ` · phone ${data.from_number || "?"} → ${data.to_number || "?"}`
+      : ` · web · ${data.created_by || "?"}`;
+    $("#detail-title").textContent = `#${shortId(id)}${via}`;
     $("#delete-conv").classList.remove("hidden");
     const detail = $("#detail");
     detail.innerHTML = "";
@@ -391,11 +439,13 @@ async function showConversation(id) {
   }
 }
 
+$("#refresh-history").addEventListener("click", loadHistory);
+
 $("#delete-conv").addEventListener("click", async () => {
   const id = state.selectedConvId;
-  if (id === null || !confirm(`Delete conversation #${id}?`)) return;
+  if (id === null || !confirm(`Delete conversation #${shortId(id)}? This can't be undone.`)) return;
   try {
-    await api(`/api/v1/conversations/${id}`, { method: "DELETE" });
+    await api(`/api/v1/conversations/${encodeURIComponent(id)}`, { method: "DELETE" });
     state.selectedConvId = null;
     $("#detail").innerHTML = "";
     $("#detail-title").textContent = "Select a conversation";
@@ -439,6 +489,221 @@ $("#call-form").addEventListener("submit", async (event) => {
   }
 });
 
+// ---------- users (admin) ----------
+
+async function loadUsers() {
+  if (!isAdmin()) return;
+  try {
+    const users = await api("/api/v1/users");
+    const tbody = $("#users-table tbody");
+    tbody.innerHTML = "";
+    users.forEach((u) => tbody.appendChild(userRow(u)));
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+function cell(text) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  return td;
+}
+
+function userRow(user) {
+  const tr = document.createElement("tr");
+  const isSelf = user.username === state.user.username;
+  tr.append(
+    cell(isSelf ? `${user.username} (you)` : user.username),
+    cell(user.role),
+    cell(formatTime(user.created_at)),
+    cell(user.last_login_at ? formatTime(user.last_login_at) : "never"),
+  );
+  const actions = document.createElement("td");
+  actions.className = "actions";
+
+  const resetBtn = document.createElement("button");
+  resetBtn.className = "btn small";
+  resetBtn.type = "button";
+  resetBtn.textContent = "Reset password";
+  resetBtn.addEventListener("click", () => showResetForm(actions, user.username));
+  actions.appendChild(resetBtn);
+
+  if (!isSelf) {
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "btn small danger";
+    deleteBtn.type = "button";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.addEventListener("click", async () => {
+      if (!confirm(`Delete user '${user.username}'? They will be logged out immediately.`)) return;
+      try {
+        await api(`/api/v1/users/${encodeURIComponent(user.username)}`, { method: "DELETE" });
+        loadUsers();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    actions.appendChild(deleteBtn);
+  }
+  tr.appendChild(actions);
+  return tr;
+}
+
+function showResetForm(container, username) {
+  container.innerHTML = "";
+  const form = document.createElement("form");
+  form.className = "row";
+  const input = document.createElement("input");
+  input.type = "password";
+  input.placeholder = "New password";
+  input.autocomplete = "new-password";
+  input.required = true;
+  input.maxLength = 128;
+  const save = document.createElement("button");
+  save.className = "btn small primary";
+  save.textContent = "Save";
+  const cancel = document.createElement("button");
+  cancel.className = "btn small";
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", loadUsers);
+  form.append(input, save, cancel);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await api(`/api/v1/users/${encodeURIComponent(username)}/password`, {
+        method: "PUT",
+        body: JSON.stringify({ password: input.value }),
+      });
+      if (username === state.user.username) {
+        showLogin("Password changed. Please sign in again.");
+        return;
+      }
+      toast(`Password updated for ${username}. They have been logged out.`, "ok");
+      loadUsers();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+  container.appendChild(form);
+  input.focus();
+}
+
+$("#user-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const body = {
+    username: form.elements.username.value.trim().toLowerCase(),
+    password: form.elements.password.value,
+    role: form.elements.role.value,
+  };
+  try {
+    const user = await api("/api/v1/users", { method: "POST", body: JSON.stringify(body) });
+    form.reset();
+    $("#user-msg").textContent = `Created ${user.role} '${user.username}'.`;
+    loadUsers();
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+// ---------- account ----------
+
+$("#password-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  if (form.elements.new.value !== form.elements.repeat.value) {
+    toast("The new passwords don't match.");
+    return;
+  }
+  try {
+    await api("/api/v1/auth/password", {
+      method: "POST",
+      body: JSON.stringify({
+        current_password: form.elements.current.value,
+        new_password: form.elements.new.value,
+      }),
+      allowUnauthorized: true, // a wrong current password is a 401 but shouldn't log you out
+    });
+    form.reset();
+    $("#password-msg").textContent = "Password changed.";
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+// ---------- login / logout ----------
+
+function isAdmin() {
+  return Boolean(state.user && state.user.role === "admin");
+}
+
+async function showLogin(message = "") {
+  if (state.convId !== null) {
+    state.turn++;
+    stopListening();
+    if (canSpeak) speechSynthesis.cancel();
+    state.convId = null;
+    setPhase("idle");
+  }
+  state.user = null;
+  $("#app-shell").classList.add("hidden");
+  $("#login-view").classList.remove("hidden");
+  $("#login-msg").textContent = message === "Not logged in" ? "" : message;
+  try {
+    const { has_users } = await api("/api/v1/auth/setup-status", { allowUnauthorized: true });
+    $("#setup-hint").classList.toggle("hidden", has_users);
+  } catch { /* server unreachable; the login attempt will report it */ }
+}
+
+$("#login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  $("#login-msg").textContent = "";
+  try {
+    const { user } = await api("/api/v1/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username: form.elements.username.value, password: form.elements.password.value }),
+      allowUnauthorized: true,
+    });
+    form.reset();
+    enterApp(user);
+  } catch (err) {
+    $("#login-msg").textContent = err.message;
+  }
+});
+
+$("#logout-btn").addEventListener("click", async () => {
+  if (state.convId !== null) await endCall();
+  try { await api("/api/v1/auth/logout", { method: "POST", allowUnauthorized: true }); } catch { /* ignore */ }
+  showLogin("You have been logged out.");
+});
+
+async function enterApp(user) {
+  state.user = user;
+  document.body.classList.toggle("is-admin", isAdmin());
+  $("#user-chip").textContent = `${user.username} · ${user.role}`;
+  $("#login-view").classList.add("hidden");
+  $("#app-shell").classList.remove("hidden");
+  showView("talk");
+  setPhase("idle");
+  try {
+    const status = await api("/api/v1/status");
+    const badge = $("#mode-badge");
+    badge.classList.remove("live", "demo");
+    if (status.mode === "gemini") {
+      badge.textContent = `Live · ${status.model}`;
+      badge.classList.add("live");
+    } else {
+      badge.textContent = "Demo mode · no API key";
+      badge.classList.add("demo");
+    }
+    await loadAgent();
+    await loadTelephony();
+  } catch (err) {
+    if (err.status !== 401) toast(err.message);
+  }
+}
+
 // ---------- wiring ----------
 
 $("#start-btn").addEventListener("click", startCall);
@@ -468,21 +733,11 @@ async function init() {
     populateVoices();
     speechSynthesis.onvoiceschanged = populateVoices;
   }
-  setPhase("idle");
   try {
-    const health = await api("/api/v1/health");
-    const badge = $("#mode-badge");
-    if (health.mode === "gemini") {
-      badge.textContent = `Live · ${health.model}`;
-      badge.classList.add("live");
-    } else {
-      badge.textContent = "Demo mode · no API key";
-      badge.classList.add("demo");
-    }
-    await loadSettings();
-    await loadTelephony();
+    const user = await api("/api/v1/auth/me", { allowUnauthorized: true });
+    enterApp(user);
   } catch (err) {
-    toast(`Cannot reach the server: ${err.message}`);
+    showLogin(err.status === 401 ? "" : `Cannot reach the server: ${err.message}`);
   }
 }
 

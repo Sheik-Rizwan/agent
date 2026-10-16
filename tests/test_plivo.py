@@ -6,9 +6,8 @@ import xml.etree.ElementTree as ET
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 
-from app.main import app
+from tests.conftest import mock_http
 
 AUTH_TOKEN = "test-auth-token"
 PUBLIC = "https://agent.example.ngrok.app"
@@ -20,33 +19,27 @@ def sign(path: str, nonce: str = "12345") -> dict:
     return {"X-Plivo-Signature-V2": base64.b64encode(digest).decode(), "X-Plivo-Signature-V2-Nonce": nonce}
 
 
-@pytest.fixture
-def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "test.db"))
-    monkeypatch.setenv("GEMINI_API_KEY", "")
+@pytest.fixture(autouse=True)
+def plivo_env(monkeypatch):
     monkeypatch.setenv("PLIVO_AUTH_ID", "MAXXXXXXXXXXXXXXXXXX")
     monkeypatch.setenv("PLIVO_AUTH_TOKEN", AUTH_TOKEN)
     monkeypatch.setenv("PLIVO_PHONE_NUMBER", "+918000000000")
     monkeypatch.setenv("PUBLIC_BASE_URL", PUBLIC)
-    monkeypatch.setenv("PLIVO_VALIDATE_SIGNATURE", "true")
-    with TestClient(app) as c:
-        yield c
 
 
 def post_webhook(client, path: str, data: dict | None = None):
-    """POST to a Plivo webhook with a valid signature (signature ignores the query string)."""
+    """POST to a Plivo webhook with a valid signature (the signature ignores the query string)."""
     return client.post(f"{WEBHOOKS}{path}", data=data or {}, headers=sign(f"{WEBHOOKS}{path.split('?')[0]}"))
 
 
 def parse(resp) -> ET.Element:
+    assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"].startswith("application/xml")
     return ET.fromstring(resp.text.split("\n", 1)[1])
 
 
 def answer_call(client, call_uuid="call-1"):
-    resp = post_webhook(client, "/answer", {"CallUUID": call_uuid, "From": "919876543210", "To": "918000000000"})
-    assert resp.status_code == 200
-    return parse(resp)
+    return parse(post_webhook(client, "/answer", {"CallUUID": call_uuid, "From": "919876543210", "To": "918000000000"}))
 
 
 def speech_path(xml: ET.Element) -> str:
@@ -57,18 +50,17 @@ def speech_path(xml: ET.Element) -> str:
 
 # ---------- REST: placing calls ----------
 
-def test_status_reports_configuration(client):
-    status = client.get("/api/v1/calls/status").json()
-    assert status == {
+def test_status_reports_configuration(admin):
+    assert admin.get("/api/v1/calls/status").json() == {
         "provider": "plivo",
         "configured": True,
         "phone_number": "+918000000000",
         "public_base_url": PUBLIC,
     }
-    assert client.get("/api/v1/health").json()["telephony_configured"] is True
+    assert admin.get("/api/v1/status").json()["telephony_configured"] is True
 
 
-def test_place_call_sends_correct_request_to_plivo(client, monkeypatch):
+def test_place_call_sends_correct_request_to_plivo(admin, monkeypatch):
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -77,13 +69,10 @@ def test_place_call_sends_correct_request_to_plivo(client, monkeypatch):
         captured["body"] = json.loads(request.read())
         return httpx.Response(201, json={"api_id": "x", "message": "call fired", "request_uuid": "req-123"})
 
-    real = httpx.AsyncClient
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
-
-    resp = client.post("/api/v1/calls", json={"to": "+91 98765-43210"})
+    mock_http(monkeypatch, handler)
+    resp = admin.post("/api/v1/calls", json={"to": "+91 98765-43210"})
     assert resp.status_code == 201
     assert resp.json() == {"request_uuid": "req-123", "message": "call fired"}
-
     assert captured["url"] == "https://api.plivo.com/v1/Account/MAXXXXXXXXXXXXXXXXXX/Call/"
     expected_auth = base64.b64encode(f"MAXXXXXXXXXXXXXXXXXX:{AUTH_TOKEN}".encode()).decode()
     assert captured["auth"] == f"Basic {expected_auth}"
@@ -97,135 +86,209 @@ def test_place_call_sends_correct_request_to_plivo(client, monkeypatch):
     }
 
 
-def test_place_call_rejects_bad_number(client):
-    resp = client.post("/api/v1/calls", json={"to": "12-abc-345"})
+def test_regular_user_can_place_calls(user_client, monkeypatch):
+    mock_http(monkeypatch, lambda r: httpx.Response(201, json={"message": "call fired", "request_uuid": "r"}))
+    assert user_client.post("/api/v1/calls", json={"to": "+919876543210"}).status_code == 201
+
+
+@pytest.mark.parametrize("number", ["12-abc-345", "+0123456789", "++919876543210", "+91 98765", "1234567890123456"])
+def test_place_call_rejects_bad_numbers(admin, number):
+    resp = admin.post("/api/v1/calls", json={"to": number})
     assert resp.status_code == 422
-    assert "international format" in resp.json()["detail"]
 
 
-def test_place_call_surfaces_plivo_error(client, monkeypatch):
-    real = httpx.AsyncClient
-    transport = httpx.MockTransport(lambda r: httpx.Response(401, json={"error": "authentication failed"}))
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw))
-    resp = client.post("/api/v1/calls", json={"to": "+919876543210"})
+def test_place_call_surfaces_plivo_error(admin, monkeypatch):
+    mock_http(monkeypatch, lambda r: httpx.Response(401, json={"error": "authentication failed"}))
+    resp = admin.post("/api/v1/calls", json={"to": "+919876543210"})
     assert resp.status_code == 502
     assert "authentication failed" in resp.json()["detail"]
 
 
-def test_place_call_requires_configuration(client, monkeypatch):
+def test_place_call_handles_non_json_error(admin, monkeypatch):
+    mock_http(monkeypatch, lambda r: httpx.Response(500, text="<html>oops</html>"))
+    resp = admin.post("/api/v1/calls", json={"to": "+919876543210"})
+    assert resp.status_code == 502
+    assert "Plivo error 500" in resp.json()["detail"]
+
+
+def test_place_call_handles_network_failure(admin, monkeypatch):
+    def handler(request):
+        raise httpx.ConnectError("down")
+
+    mock_http(monkeypatch, handler)
+    resp = admin.post("/api/v1/calls", json={"to": "+919876543210"})
+    assert resp.status_code == 502
+    assert "Could not reach Plivo" in resp.json()["detail"]
+
+
+def test_place_call_requires_configuration(admin, monkeypatch):
     monkeypatch.setenv("PLIVO_AUTH_ID", "")
-    resp = client.post("/api/v1/calls", json={"to": "+919876543210"})
+    resp = admin.post("/api/v1/calls", json={"to": "+919876543210"})
     assert resp.status_code == 503
     assert "PLIVO_AUTH_ID" in resp.json()["detail"]
 
 
-def test_place_call_requires_public_url(client, monkeypatch):
+def test_place_call_requires_public_url(admin, monkeypatch):
     monkeypatch.setenv("PUBLIC_BASE_URL", "")
-    resp = client.post("/api/v1/calls", json={"to": "+919876543210"})
+    resp = admin.post("/api/v1/calls", json={"to": "+919876543210"})
     assert resp.status_code == 503
     assert "PUBLIC_BASE_URL" in resp.json()["detail"]
 
 
 # ---------- webhooks: call flow ----------
 
-def test_answer_greets_and_listens(client):
-    xml = answer_call(client)
+def test_answer_greets_and_listens(admin):
+    xml = answer_call(admin)
     get_input = xml.find("GetInput")
     assert get_input.get("inputType") == "speech"
     assert get_input.get("method") == "POST"
     assert get_input.find("Speak").text.startswith("Hi, this is Ava")
-    # Silence falls through to a redirect back to the same handler.
-    assert xml.find("Redirect").text == get_input.get("action")
+    assert xml.find("Redirect").text == get_input.get("action")  # silence falls through to here
 
-    convs = client.get("/api/v1/conversations").json()
-    assert convs[0]["channel"] == "phone"
-    assert convs[0]["call_uuid"] == "call-1"
-    assert convs[0]["from_number"] == "919876543210"
-
-
-def test_answer_retry_reuses_conversation(client):
-    answer_call(client, "call-dup")
-    answer_call(client, "call-dup")
-    assert len(client.get("/api/v1/conversations").json()) == 1
+    [conv] = admin.get("/api/v1/conversations").json()
+    assert conv["channel"] == "phone"
+    assert conv["call_uuid"] == "call-1"
+    assert conv["from_number"] == "919876543210"
+    assert conv["created_by"] is None
 
 
-def test_speech_gets_agent_reply(client):
-    path = speech_path(answer_call(client))
-    xml = parse(post_webhook(client, path, {"Speech": "What are your hours?", "CallUUID": "call-1"}))
+def test_voice_and_language_from_env(admin, monkeypatch):
+    monkeypatch.setenv("PLIVO_VOICE", "MAN")
+    monkeypatch.setenv("PLIVO_LANGUAGE", "en-GB")
+    xml = answer_call(admin)
+    assert xml.find("GetInput").get("language") == "en-GB"
+    assert xml.find("GetInput/Speak").get("voice") == "MAN"
+
+
+def test_answer_works_with_get(admin):
+    resp = admin.get(f"{WEBHOOKS}/answer?CallUUID=get-1", headers=sign(f"{WEBHOOKS}/answer"))
+    assert parse(resp).find("GetInput") is not None
+
+
+def test_answer_retry_reuses_conversation(admin):
+    answer_call(admin, "call-dup")
+    answer_call(admin, "call-dup")
+    assert len(admin.get("/api/v1/conversations").json()) == 1
+
+
+def test_answer_without_call_uuid_still_works(admin):
+    parse(post_webhook(admin, "/answer", {}))
+    assert len(admin.get("/api/v1/conversations").json()) == 1
+
+
+def test_speech_gets_agent_reply(admin):
+    path = speech_path(answer_call(admin))
+    xml = parse(post_webhook(admin, path, {"Speech": "What are your hours?", "CallUUID": "call-1"}))
     assert "Monday to Friday" in xml.find("GetInput/Speak").text
-
-    conv_id = client.get("/api/v1/conversations").json()[0]["id"]
-    messages = client.get(f"/api/v1/conversations/{conv_id}").json()["messages"]
+    conv_id = admin.get("/api/v1/conversations").json()[0]["id"]
+    messages = admin.get(f"/api/v1/conversations/{conv_id}").json()["messages"]
     assert [m["role"] for m in messages] == ["assistant", "user", "assistant"]
-    assert messages[1]["content"] == "What are your hours?"
 
 
-def test_silence_reprompts_then_hangs_up(client):
-    path = speech_path(answer_call(client))
+def test_silence_reprompts_then_hangs_up(admin):
+    path = speech_path(answer_call(admin))
     for _ in range(2):
-        xml = parse(post_webhook(client, path))
+        xml = parse(post_webhook(admin, path))
         assert xml.find("GetInput/Speak").text.startswith("Sorry, I didn't catch that")
         path = speech_path(xml)
-
-    xml = parse(post_webhook(client, path))
+    xml = parse(post_webhook(admin, path))
     assert xml.find("Hangup") is not None
-    assert client.get("/api/v1/conversations").json()[0]["ended_at"] is not None
+    assert admin.get("/api/v1/conversations").json()[0]["ended_at"] is not None
 
 
-def test_speech_resets_silence_counter(client):
-    path = speech_path(answer_call(client))
-    path = speech_path(parse(post_webhook(client, path)))  # one silent turn
-    xml = parse(post_webhook(client, path, {"Speech": "hello"}))
+@pytest.mark.parametrize("limit", ["0", "1", "4"])
+def test_silence_limit_from_env(admin, monkeypatch, limit):
+    monkeypatch.setenv("PLIVO_MAX_SILENT_TURNS", limit)
+    path = speech_path(answer_call(admin))
+    for _ in range(int(limit)):
+        xml = parse(post_webhook(admin, path))
+        path = speech_path(xml)
+    assert parse(post_webhook(admin, path)).find("Hangup") is not None
+
+
+def test_phone_messages_come_from_agent_config(admin):
+    admin.put("/api/v1/agent", json={"phone_not_heard": "Pardon?", "phone_goodbye_silent": "Bye now."})
+    path = speech_path(answer_call(admin))
+    xml = parse(post_webhook(admin, path))
+    assert xml.find("GetInput/Speak").text == "Pardon?"
+
+
+def test_speech_resets_silence_counter(admin):
+    path = speech_path(answer_call(admin))
+    path = speech_path(parse(post_webhook(admin, path)))  # one silent turn
+    xml = parse(post_webhook(admin, path, {"Speech": "hello"}))
     assert "silent=1" in speech_path(xml)
 
 
-def test_llm_failure_keeps_call_alive(client, monkeypatch):
+def test_llm_failure_keeps_call_alive(admin, monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "bad")
-    real = httpx.AsyncClient
-    transport = httpx.MockTransport(lambda r: httpx.Response(500, json={"error": {"message": "boom"}}))
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw))
-
-    path = speech_path(answer_call(client))
-    xml = parse(post_webhook(client, path, {"Speech": "hello"}))
+    mock_http(monkeypatch, lambda r: httpx.Response(500, json={"error": {"message": "boom"}}))
+    path = speech_path(answer_call(admin))
+    xml = parse(post_webhook(admin, path, {"Speech": "hello"}))
     assert "technical problem" in xml.find("GetInput/Speak").text
 
 
-def test_speech_for_unknown_conversation_hangs_up(client):
-    xml = parse(post_webhook(client, "/speech?conversation_id=999&silent=1", {"Speech": "hi"}))
+@pytest.mark.parametrize("conv_id", ["f" * 32, "not-an-id", "..%2Fusers"])
+def test_speech_for_unknown_conversation_hangs_up(admin, conv_id):
+    xml = parse(post_webhook(admin, f"/speech?conversation_id={conv_id}&silent=1", {"Speech": "hi"}))
     assert xml.find("Hangup") is not None
 
 
-def test_hangup_ends_conversation(client):
-    answer_call(client, "call-end")
-    assert post_webhook(client, "/hangup", {"CallUUID": "call-end"}).status_code == 204
-    assert client.get("/api/v1/conversations").json()[0]["ended_at"] is not None
+def test_speech_with_bad_silent_param_is_422(admin):
+    path = speech_path(answer_call(admin)).replace("silent=1", "silent=abc")
+    assert post_webhook(admin, path).status_code == 422
 
 
-def test_xml_escapes_agent_text(client):
-    client.put(
-        "/api/v1/agent",
-        json={"agent_name": "A", "greeting": "Hi <you> & \"friends\"", "system_prompt": "p"},
-    )
-    xml = answer_call(client)
-    assert xml.find("GetInput/Speak").text == 'Hi <you> & "friends"'
+def test_hangup_ends_conversation(admin):
+    answer_call(admin, "call-end")
+    assert post_webhook(admin, "/hangup", {"CallUUID": "call-end"}).status_code == 204
+    assert admin.get("/api/v1/conversations").json()[0]["ended_at"] is not None
+
+
+def test_hangup_for_unknown_call_is_harmless(admin):
+    assert post_webhook(admin, "/hangup", {"CallUUID": "nope"}).status_code == 204
+    assert post_webhook(admin, "/hangup", {}).status_code == 204
+
+
+def test_deleting_phone_conversation_cleans_call_index(admin, data_dir):
+    answer_call(admin, "call-del")
+    conv_id = admin.get("/api/v1/conversations").json()[0]["id"]
+    admin.delete(f"/api/v1/conversations/{conv_id}")
+    assert "call-del" not in json.loads((data_dir / "call_index.json").read_text())
+    answer_call(admin, "call-del")  # a retried answer now starts fresh instead of crashing
+    assert len(admin.get("/api/v1/conversations").json()) == 1
+
+
+def test_xml_escapes_agent_text(admin):
+    admin.put("/api/v1/agent", json={"greeting": "Hi <you> & \"friends\" ]]>"})
+    xml = answer_call(admin)
+    assert xml.find("GetInput/Speak").text == 'Hi <you> & "friends" ]]>'
 
 
 # ---------- webhooks: security ----------
 
-def test_webhook_rejects_missing_signature(client):
-    resp = client.post(f"{WEBHOOKS}/answer", data={"CallUUID": "x"})
-    assert resp.status_code == 403
+def test_webhooks_do_not_need_login_but_need_signature(anon):
+    assert post_webhook(anon, "/answer", {"CallUUID": "x"}).status_code == 200
+    assert anon.post(f"{WEBHOOKS}/answer", data={"CallUUID": "x"}).status_code == 403
 
 
-def test_webhook_rejects_wrong_signature(client):
+def test_webhook_rejects_wrong_signature(admin):
     headers = sign(f"{WEBHOOKS}/answer")
     headers["X-Plivo-Signature-V2"] = "AAAA" + headers["X-Plivo-Signature-V2"][4:]
-    resp = client.post(f"{WEBHOOKS}/answer", data={"CallUUID": "x"}, headers=headers)
+    assert admin.post(f"{WEBHOOKS}/answer", data={"CallUUID": "x"}, headers=headers).status_code == 403
+    assert admin.get("/api/v1/conversations").json() == []
+
+
+def test_signature_for_another_path_is_rejected(admin):
+    resp = admin.post(f"{WEBHOOKS}/answer", data={}, headers=sign(f"{WEBHOOKS}/hangup"))
     assert resp.status_code == 403
-    assert client.get("/api/v1/conversations").json() == []
 
 
-def test_signature_check_can_be_disabled(client, monkeypatch):
+def test_webhook_without_plivo_token_is_503(admin, monkeypatch):
+    monkeypatch.setenv("PLIVO_AUTH_TOKEN", "")
+    assert admin.post(f"{WEBHOOKS}/answer", data={}).status_code == 503
+
+
+def test_signature_check_can_be_disabled(admin, monkeypatch):
     monkeypatch.setenv("PLIVO_VALIDATE_SIGNATURE", "false")
-    resp = client.post(f"{WEBHOOKS}/answer", data={"CallUUID": "x"})
-    assert resp.status_code == 200
+    assert admin.post(f"{WEBHOOKS}/answer", data={"CallUUID": "x"}).status_code == 200

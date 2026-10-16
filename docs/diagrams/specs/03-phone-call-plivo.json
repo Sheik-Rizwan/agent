@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Outbound Phone Call via Plivo",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "viewBox": [1400, 740],
+    "column_fit": "spread"
+  },
+  "participants": [
+    { "id": "browser", "type": "frontend", "label": "Browser UI" },
+    { "id": "callapi", "type": "backend", "label": "Calls API" },
+    { "id": "callee", "type": "external", "label": "Callee phone" },
+    { "id": "plivo", "type": "cloud", "label": "Plivo" },
+    { "id": "webhook", "type": "security", "label": "Plivo webhooks" },
+    { "id": "conv", "type": "backend", "label": "Conversation svc" },
+    { "id": "gemini", "type": "cloud", "label": "Gemini API" }
+  ],
+  "segments": [
+    { "from": 150, "to": 230, "label": "Place call" },
+    { "from": 238, "to": 340, "label": "Answer + greet" },
+    { "from": 348, "to": 510, "label": "Speech turn (repeats)" },
+    { "from": 518, "to": 568, "label": "Silence" },
+    { "from": 576, "to": 630, "label": "Hangup" }
+  ],
+  "messages": [
+    { "id": "place", "from": "browser", "to": "callapi", "y": 165, "label": "POST /api/v1/calls {to}", "variant": "emphasis", "note": "Login required; PUBLIC_BASE_URL must be set" },
+    { "id": "rest-create", "from": "callapi", "to": "plivo", "y": 193, "label": "PlivoService: REST create call", "variant": "emphasis", "note": "answer_url + hangup_url point at /api/v1/webhooks/plivo" },
+    { "id": "fired", "from": "callapi", "to": "browser", "y": 221, "label": "201 request_uuid", "variant": "return" },
+    { "id": "dial", "from": "plivo", "to": "callee", "y": 250, "label": "dial + connect", "variant": "default" },
+    { "id": "answer", "from": "plivo", "to": "webhook", "y": 278, "label": "POST /answer (signed)", "variant": "security", "note": "X-Plivo-Signature-V2 HMAC-SHA256 verified, else 403" },
+    { "id": "start", "from": "webhook", "to": "conv", "y": 306, "label": "start(phone): greeting stored", "variant": "default" },
+    { "id": "greet-xml", "from": "webhook", "to": "plivo", "y": 332, "label": "XML GetInput speech + greeting", "variant": "return" },
+    { "id": "speaks", "from": "callee", "to": "plivo", "y": 362, "label": "caller speaks", "variant": "default" },
+    { "id": "speech", "from": "plivo", "to": "webhook", "y": 390, "label": "POST /speech Speech=text", "variant": "security" },
+    { "id": "reply", "from": "webhook", "to": "conv", "y": 418, "label": "reply(id, text)", "variant": "default" },
+    { "id": "llm", "from": "conv", "to": "gemini", "y": 446, "label": "generateContent", "variant": "emphasis" },
+    { "id": "llm-text", "from": "gemini", "to": "conv", "y": 474, "label": "reply text", "variant": "return" },
+    { "id": "reply-xml", "from": "webhook", "to": "plivo", "y": 502, "label": "XML Speak reply + GetInput", "variant": "return", "note": "Gemini failure -> phone_technical_issue line" },
+    { "id": "silent", "from": "plivo", "to": "webhook", "y": 532, "label": "POST /speech, no Speech", "variant": "dashed", "note": "Redirect fallback; silent counter in query" },
+    { "id": "reprompt", "from": "webhook", "to": "plivo", "y": 560, "label": "re-prompt, or goodbye + Hangup", "variant": "return", "note": "silent > PLIVO_MAX_SILENT_TURNS (default 2) ends the conversation and returns Hangup XML" },
+    { "id": "hangup", "from": "plivo", "to": "webhook", "y": 590, "label": "POST /hangup CallUUID", "variant": "security" },
+    { "id": "end", "from": "webhook", "to": "conv", "y": 618, "label": "end_by_call_uuid", "variant": "default" }
+  ],
+  "activations": [
+    { "participant": "callapi", "from": 160, "to": 227, "type": "backend" },
+    { "participant": "webhook", "from": 273, "to": 338, "type": "security" },
+    { "participant": "webhook", "from": 385, "to": 508, "type": "security" },
+    { "participant": "conv", "from": 413, "to": 480, "type": "backend" },
+    { "participant": "webhook", "from": 527, "to": 566, "type": "security" },
+    { "participant": "webhook", "from": 585, "to": 624, "type": "security" }
+  ],
+  "cards": [
+    { "dot": "rose", "title": "Webhook trust", "items": ["No login on /webhooks/plivo; every request needs a valid Plivo V2 signature"] },
+    { "dot": "emerald", "title": "Call state", "items": ["CallUUID -> conversation id in call_index.json; answer retries reuse it"] },
+    { "dot": "amber", "title": "Silence", "items": ["Empty Speech re-prompts with phone_not_heard until the silent limit, then hangs up"] }
+  ]
+}

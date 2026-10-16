@@ -1,0 +1,270 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Authentication and Access Control",
+    "locale": "en",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    {
+      "id": "request",
+      "label": "Authenticated request"
+    },
+    {
+      "id": "reject",
+      "label": "Rejections",
+      "variant": "exception"
+    },
+    {
+      "id": "login",
+      "label": "Login: POST /auth/login"
+    }
+  ],
+  "mainPath": [
+    "origin",
+    "token",
+    "session",
+    "valid",
+    "role",
+    "ctrl"
+  ],
+  "nodes": [
+    {
+      "id": "origin",
+      "lane": "request",
+      "col": 0,
+      "type": "security",
+      "label": "Origin check",
+      "sublabel": "POST/PUT/PATCH/DELETE",
+      "tag": "cross-origin -> 403",
+      "width": 132
+    },
+    {
+      "id": "token",
+      "lane": "request",
+      "col": 1,
+      "type": "security",
+      "label": "Read token",
+      "sublabel": "Bearer or HttpOnly cookie",
+      "width": 132
+    },
+    {
+      "id": "session",
+      "lane": "request",
+      "col": 2,
+      "type": "database",
+      "label": "Session lookup",
+      "sublabel": "SHA-256 in sessions.json",
+      "width": 132
+    },
+    {
+      "id": "valid",
+      "lane": "request",
+      "col": 3,
+      "type": "security",
+      "label": "Expiry + user",
+      "sublabel": "expires_at, users.json",
+      "width": 132
+    },
+    {
+      "id": "role",
+      "lane": "request",
+      "col": 4,
+      "type": "security",
+      "label": "Role check",
+      "sublabel": "require_admin",
+      "width": 132
+    },
+    {
+      "id": "ctrl",
+      "lane": "request",
+      "col": 5,
+      "type": "backend",
+      "label": "Controller",
+      "sublabel": "handler runs",
+      "width": 132
+    },
+    {
+      "id": "r429",
+      "lane": "reject",
+      "col": 1,
+      "type": "security",
+      "label": "429 Too Many",
+      "sublabel": "Retry-After",
+      "width": 132
+    },
+    {
+      "id": "r401",
+      "lane": "reject",
+      "col": 2,
+      "type": "security",
+      "label": "401 Unauthorized",
+      "sublabel": "not logged in",
+      "width": 132
+    },
+    {
+      "id": "r403",
+      "lane": "reject",
+      "col": 4,
+      "type": "security",
+      "label": "403 Forbidden",
+      "sublabel": "admin required",
+      "width": 132
+    },
+    {
+      "id": "ratelimit",
+      "lane": "login",
+      "col": 1,
+      "type": "security",
+      "label": "Rate limit",
+      "sublabel": "per user + IP",
+      "width": 132
+    },
+    {
+      "id": "scrypt",
+      "lane": "login",
+      "col": 2,
+      "type": "security",
+      "label": "scrypt verify",
+      "sublabel": "dummy hash if unknown",
+      "width": 132
+    },
+    {
+      "id": "create",
+      "lane": "login",
+      "col": 3,
+      "type": "database",
+      "label": "Create session",
+      "sublabel": "Set-Cookie SameSite=Strict",
+      "width": 132
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-origin-token",
+      "from": "origin",
+      "to": "token",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "e-token-session",
+      "from": "token",
+      "to": "session",
+      "label": "hash",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "e-session-valid",
+      "from": "session",
+      "to": "valid",
+      "label": "found",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "e-valid-role",
+      "from": "valid",
+      "to": "role",
+      "label": "active",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "e-role-ctrl",
+      "from": "role",
+      "to": "ctrl",
+      "label": "allowed",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "e-session-401",
+      "from": "session",
+      "to": "r401",
+      "label": "missing",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e-valid-401",
+      "from": "valid",
+      "to": "r401",
+      "label": "expired",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e-role-403",
+      "from": "role",
+      "to": "r403",
+      "label": "not admin",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e-origin-login",
+      "from": "origin",
+      "to": "ratelimit",
+      "label": "login",
+      "variant": "default",
+      "role": "branch"
+    },
+    {
+      "id": "e-rate-429",
+      "from": "ratelimit",
+      "to": "r429",
+      "label": "locked",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e-rate-scrypt",
+      "from": "ratelimit",
+      "to": "scrypt",
+      "variant": "default",
+      "role": "branch"
+    },
+    {
+      "id": "e-scrypt-401",
+      "from": "scrypt",
+      "to": "r401",
+      "label": "bad password",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e-scrypt-create",
+      "from": "scrypt",
+      "to": "create",
+      "label": "match",
+      "variant": "default",
+      "role": "branch"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Session guard",
+      "items": [
+        "Only SHA-256 token hashes are stored; expired or orphaned sessions are deleted on use"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Login hardening",
+      "items": [
+        "5 failures per user+IP in 15 min -> 429; scrypt timing is equal for unknown users"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Roles",
+      "items": [
+        "get_current_user for any logged-in user; require_admin for users, agent edits, deletes"
+      ]
+    }
+  ]
+}

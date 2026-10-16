@@ -24,3 +24,6 @@ data/
 .idea/
 .DS_Store
 *.log
+
+# archify visual-check evidence (screenshots and receipts; regenerated locally)
+docs/diagrams/evidence/

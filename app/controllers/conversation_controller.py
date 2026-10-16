@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 
-from app.dependencies import get_conversation_service
+from app.dependencies import get_conversation_service, get_current_user, require_admin
 from app.schemas import (
     ConversationDetail,
     ConversationStarted,
@@ -11,37 +11,40 @@ from app.schemas import (
 )
 from app.services.conversation_service import ConversationService
 
-router = APIRouter(prefix="/conversations", tags=["conversations"])
+router = APIRouter(prefix="/conversations", tags=["conversations"], dependencies=[Depends(get_current_user)])
 
 
 @router.post("", response_model=ConversationStarted, status_code=201)
-def start_conversation(service: ConversationService = Depends(get_conversation_service)):
-    conversation, greeting = service.start(channel="web")
+def start_conversation(
+    user: dict = Depends(get_current_user),
+    service: ConversationService = Depends(get_conversation_service),
+):
+    conversation, greeting = service.start(channel="web", created_by=user["username"])
     return ConversationStarted(id=conversation["id"], greeting=greeting)
 
 
 @router.get("", response_model=list[ConversationSummary])
 def list_conversations(
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=500),
     service: ConversationService = Depends(get_conversation_service),
 ):
     return service.list(limit)
 
 
 @router.get("/{conversation_id}", response_model=ConversationDetail)
-def get_conversation(conversation_id: int, service: ConversationService = Depends(get_conversation_service)):
-    return service.get_with_messages(conversation_id)
+def get_conversation(conversation_id: str, service: ConversationService = Depends(get_conversation_service)):
+    return service.get(conversation_id)
 
 
-@router.delete("/{conversation_id}", response_model=Ok)
-def delete_conversation(conversation_id: int, service: ConversationService = Depends(get_conversation_service)):
+@router.delete("/{conversation_id}", response_model=Ok, dependencies=[Depends(require_admin)])
+def delete_conversation(conversation_id: str, service: ConversationService = Depends(get_conversation_service)):
     service.delete(conversation_id)
     return Ok()
 
 
 @router.post("/{conversation_id}/messages", response_model=ReplyOut)
 async def send_message(
-    conversation_id: int,
+    conversation_id: str,
     body: MessageIn,
     service: ConversationService = Depends(get_conversation_service),
 ):
@@ -49,6 +52,6 @@ async def send_message(
 
 
 @router.post("/{conversation_id}/end", response_model=Ok)
-def end_conversation(conversation_id: int, service: ConversationService = Depends(get_conversation_service)):
+def end_conversation(conversation_id: str, service: ConversationService = Depends(get_conversation_service)):
     service.end(conversation_id)
     return Ok()

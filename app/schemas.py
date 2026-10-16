@@ -2,11 +2,9 @@
 
 from pydantic import BaseModel, Field
 
-
-class AgentConfig(BaseModel):
-    agent_name: str = Field(min_length=1, max_length=60)
-    greeting: str = Field(min_length=1, max_length=500)
-    system_prompt: str = Field(min_length=1, max_length=20000)
+# The agent configuration is a flat {key: text} object whose keys come from
+# config/agent.default.json, so adding a key there adds a field everywhere.
+AgentConfig = dict[str, str]
 
 
 class MessageIn(BaseModel):
@@ -23,36 +21,33 @@ class Message(BaseModel):
     created_at: str
 
 
-class ConversationSummary(BaseModel):
-    id: int
+class ConversationBase(BaseModel):
+    id: str
     channel: str
-    call_uuid: str | None
-    from_number: str | None
-    to_number: str | None
+    created_by: str | None = None
+    call_uuid: str | None = None
+    from_number: str | None = None
+    to_number: str | None = None
     started_at: str
-    ended_at: str | None
+    ended_at: str | None = None
+
+
+class ConversationSummary(ConversationBase):
     message_count: int
     first_user_message: str | None
 
 
-class ConversationDetail(BaseModel):
-    id: int
-    channel: str
-    call_uuid: str | None
-    from_number: str | None
-    to_number: str | None
-    started_at: str
-    ended_at: str | None
+class ConversationDetail(ConversationBase):
     messages: list[Message]
 
 
 class ConversationStarted(BaseModel):
-    id: int
+    id: str
     greeting: str
 
 
 class CallIn(BaseModel):
-    to: str = Field(min_length=7, max_length=20, examples=["+919876543210"])
+    to: str = Field(min_length=7, max_length=24, examples=["+919876543210"])
 
 
 class CallOut(BaseModel):
@@ -69,9 +64,50 @@ class TelephonyStatus(BaseModel):
 
 class Health(BaseModel):
     status: str
+
+
+class SystemStatus(BaseModel):
     mode: str
     model: str
     telephony_configured: bool
+
+
+class LoginIn(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class User(BaseModel):
+    username: str
+    role: str
+    created_at: str
+    created_by: str | None = None
+    last_login_at: str | None = None
+
+
+class LoginOut(BaseModel):
+    user: User
+    token: str = Field(description="Session token, also set as an HttpOnly cookie. Use as `Authorization: Bearer <token>`.")
+    expires_in: int = Field(description="Seconds until the session expires")
+
+
+class SetupStatus(BaseModel):
+    has_users: bool
+
+
+class UserCreate(BaseModel):
+    username: str = Field(min_length=3, max_length=32)
+    password: str = Field(min_length=1, max_length=256)
+    role: str = Field(default="user", pattern="^(admin|user)$")
+
+
+class PasswordReset(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=1, max_length=256)
 
 
 class Ok(BaseModel):

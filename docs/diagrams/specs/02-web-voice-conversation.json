@@ -1,0 +1,236 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Web Voice Conversation Turn",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1080,
+      600
+    ],
+    "column_fit": "spread"
+  },
+  "participants": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "User",
+      "sublabel": "speaks aloud"
+    },
+    {
+      "id": "browser",
+      "type": "frontend",
+      "label": "Browser UI",
+      "sublabel": "app.js"
+    },
+    {
+      "id": "ctrl",
+      "type": "security",
+      "label": "FastAPI route",
+      "sublabel": "auth + controller"
+    },
+    {
+      "id": "svc",
+      "type": "backend",
+      "label": "Conv. service",
+      "sublabel": "ConversationService"
+    },
+    {
+      "id": "repo",
+      "type": "database",
+      "label": "Conv. repo",
+      "sublabel": "conversations/<id>"
+    },
+    {
+      "id": "llm",
+      "type": "backend",
+      "label": "LLMService",
+      "sublabel": "Gemini or demo"
+    },
+    {
+      "id": "gemini",
+      "type": "cloud",
+      "label": "Gemini API",
+      "sublabel": "generateContent"
+    }
+  ],
+  "segments": [
+    {
+      "from": 150,
+      "to": 208,
+      "label": "Capture + send"
+    },
+    {
+      "from": 215,
+      "to": 410,
+      "label": "Persist + generate"
+    },
+    {
+      "from": 417,
+      "to": 495,
+      "label": "Respond + speak"
+    }
+  ],
+  "messages": [
+    {
+      "id": "speak",
+      "from": "user",
+      "to": "browser",
+      "y": 165,
+      "label": "speech -> SpeechRecognition",
+      "variant": "default"
+    },
+    {
+      "id": "post-message",
+      "from": "browser",
+      "to": "ctrl",
+      "y": 193,
+      "label": "POST .../messages",
+      "variant": "emphasis",
+      "note": "POST /api/v1/conversations/{id}/messages with HttpOnly session cookie; Origin check + get_current_user"
+    },
+    {
+      "id": "call-reply",
+      "from": "ctrl",
+      "to": "svc",
+      "y": 225,
+      "label": "reply(id, text)",
+      "variant": "default"
+    },
+    {
+      "id": "load",
+      "from": "svc",
+      "to": "repo",
+      "y": 253,
+      "label": "append user turn",
+      "variant": "emphasis",
+      "note": "get(id) then add_message(user); ended conversation -> 409 Conflict"
+    },
+    {
+      "id": "generate",
+      "from": "svc",
+      "to": "llm",
+      "y": 283,
+      "label": "generate_reply(prompt, history)",
+      "variant": "default"
+    },
+    {
+      "id": "gemini-call",
+      "from": "llm",
+      "to": "gemini",
+      "y": 311,
+      "label": "POST generateContent",
+      "variant": "emphasis"
+    },
+    {
+      "id": "gemini-text",
+      "from": "gemini",
+      "to": "llm",
+      "y": 339,
+      "label": "candidate text",
+      "variant": "return"
+    },
+    {
+      "id": "reply-text",
+      "from": "llm",
+      "to": "svc",
+      "y": 367,
+      "label": "reply",
+      "variant": "return"
+    },
+    {
+      "id": "append-assistant",
+      "from": "svc",
+      "to": "repo",
+      "y": 397,
+      "label": "add_message(assistant)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "json-response",
+      "from": "ctrl",
+      "to": "browser",
+      "y": 427,
+      "label": "200 {reply}",
+      "variant": "return"
+    },
+    {
+      "id": "tts",
+      "from": "browser",
+      "to": "user",
+      "y": 455,
+      "label": "speechSynthesis.speak",
+      "variant": "default"
+    },
+    {
+      "id": "mic-reopen",
+      "from": "browser",
+      "to": "user",
+      "y": 483,
+      "label": "hands-free: mic reopens",
+      "variant": "dashed"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "browser",
+      "from": 160,
+      "to": 489,
+      "type": "frontend"
+    },
+    {
+      "participant": "ctrl",
+      "from": 188,
+      "to": 433,
+      "type": "security"
+    },
+    {
+      "participant": "svc",
+      "from": 220,
+      "to": 403,
+      "type": "backend"
+    },
+    {
+      "participant": "repo",
+      "from": 248,
+      "to": 259,
+      "type": "database"
+    },
+    {
+      "participant": "llm",
+      "from": 278,
+      "to": 373,
+      "type": "backend"
+    },
+    {
+      "participant": "gemini",
+      "from": 306,
+      "to": 345,
+      "type": "cloud"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Browser loop",
+      "items": [
+        "SpeechRecognition in, speechSynthesis out; hands-free retries no-speech twice"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Server turn",
+      "items": [
+        "User turn stored before the LLM call; last 40 messages sent as history"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Failure modes",
+      "items": [
+        "Ended -> 409, empty -> 422, Gemini failure -> UpstreamError; no key -> demo reply"
+      ]
+    }
+  ]
+}

@@ -12,8 +12,9 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:ge
 
 
 class LLMService:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, demo_config: dict | None = None):
         self.config = config
+        self.demo_config = demo_config or {}
 
     @property
     def mode(self) -> str:
@@ -23,14 +24,15 @@ class LLMService:
         tz_name = self.config.agent_timezone
         try:
             now = datetime.now(ZoneInfo(tz_name))
-        except ZoneInfoNotFoundError:
+        except (ZoneInfoNotFoundError, ValueError):
+            tz_name = "server local time"
             now = datetime.now()
         return f"Current date and time: {now.strftime('%A, %d %B %Y, %I:%M %p')} ({tz_name})."
 
     async def generate_reply(self, system_prompt: str, history: list[dict]) -> str:
         """history: [{"role": "user"|"assistant", "content": str}, ...], ending with the user turn."""
         if not self.config.gemini_api_key:
-            return demo_reply(history[-1]["content"] if history else "")
+            return self.demo_reply(history[-1]["content"] if history else "")
 
         contents = [
             {
@@ -48,10 +50,13 @@ class LLMService:
         body = {
             "system_instruction": {"parts": [{"text": f"{system_prompt}\n\n{self._clock_context()}"}]},
             "contents": contents,
-            "generationConfig": {"temperature": 0.6, "maxOutputTokens": 1024},
+            "generationConfig": {
+                "temperature": self.config.gemini_temperature,
+                "maxOutputTokens": self.config.gemini_max_output_tokens,
+            },
         }
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=self.config.gemini_timeout_seconds) as client:
                 resp = await client.post(
                     GEMINI_URL.format(model=self.config.gemini_model),
                     headers={"x-goog-api-key": self.config.gemini_api_key},
@@ -63,40 +68,29 @@ class LLMService:
         if resp.status_code != 200:
             try:
                 detail = resp.json().get("error", {}).get("message", resp.text)
-            except ValueError:
+            except (ValueError, AttributeError):
                 detail = resp.text
-            raise UpstreamError(f"Gemini error {resp.status_code}: {detail[:300]}")
+            raise UpstreamError(f"Gemini error {resp.status_code}: {str(detail)[:300]}")
 
-        data = resp.json()
-        candidates = data.get("candidates") or []
+        try:
+            data = resp.json()
+            candidates = data.get("candidates") or []
+        except (ValueError, AttributeError) as exc:
+            raise UpstreamError("Gemini returned an unreadable response.") from exc
         if not candidates:
-            reason = data.get("promptFeedback", {}).get("blockReason", "no response")
+            reason = (data.get("promptFeedback") or {}).get("blockReason", "no response")
             raise UpstreamError(f"Gemini returned no answer ({reason}).")
-        parts = candidates[0].get("content", {}).get("parts") or []
-        text = "".join(part.get("text", "") for part in parts).strip()
+        parts = (candidates[0].get("content") or {}).get("parts") or []
+        text = "".join(part.get("text", "") for part in parts if isinstance(part, dict)).strip()
         if not text:
-            raise UpstreamError("Gemini returned an empty answer.")
+            reason = candidates[0].get("finishReason", "empty")
+            raise UpstreamError(f"Gemini returned an empty answer ({reason}).")
         return text
 
-
-def demo_reply(user_text: str) -> str:
-    """Canned replies so the app can be demoed without credentials."""
-    text = user_text.lower()
-    if any(w in text for w in ("hour", "open", "close", "timing")):
-        return "We're open Monday to Friday from 9am to 6pm, and Saturday from 10am to 2pm. We're closed on Sunday."
-    if any(w in text for w in ("book", "appointment", "schedule", "slot")):
-        return "I'd be happy to book that for you. Could I have your name and a day that works for you?"
-    if any(w in text for w in ("price", "cost", "fee", "charge")):
-        return "A check-up and cleaning costs 1,500 rupees. Other treatments are priced after an exam."
-    if any(w in text for w in ("where", "address", "location")):
-        return "We're at 12 MG Road, Bengaluru."
-    if any(w in text for w in ("pain", "bleed", "swell", "emergency")):
-        return "I'm sorry you're in pain. If it's severe, please come in right away or call emergency services."
-    if any(w in text for w in ("thank", "bye")):
-        return "You're welcome! Have a great day."
-    if any(w in text for w in ("hello", "hi", "hey")):
-        return "Hello! How can I help you today?"
-    return (
-        "I'm running in demo mode right now, so I can only answer about hours, prices, "
-        "location, and bookings. Add a Gemini API key to the .env file for full conversations."
-    )
+    def demo_reply(self, user_text: str) -> str:
+        """Keyword-matched canned replies from the "demo" section of agent.default.json."""
+        words = user_text.lower()
+        for rule in self.demo_config.get("replies", []):
+            if any(keyword.lower() in words for keyword in rule.get("keywords", [])):
+                return rule["reply"]
+        return self.demo_config.get("fallback", "Demo mode: add a GEMINI_API_KEY for real answers.")

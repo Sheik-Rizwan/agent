@@ -1,94 +1,116 @@
-"""Data access for conversations and their messages."""
+"""Data access for conversations, stored as one JSON file per conversation.
 
+Layout:
+    <DATA_DIR>/conversations/<id>.json   the conversation and all its messages
+    <DATA_DIR>/call_index.json           Plivo CallUUID -> conversation id
+
+Conversation ids are random 32-character hex strings. Every id is checked
+against that pattern before it is turned into a file path, so a request like
+`/conversations/..%2F..%2Fusers` can never read or delete other files.
+"""
+
+import re
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
-from app.core.database import Database
+from app.core.json_store import JsonFile, ensure_private_dir
 
-CONVERSATION_FIELDS = "id, channel, call_uuid, from_number, to_number, started_at, ended_at"
+ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
+def is_valid_id(conversation_id: str) -> bool:
+    return isinstance(conversation_id, str) and bool(ID_PATTERN.match(conversation_id))
 
 
 class ConversationRepository:
-    def __init__(self, db: Database):
-        self.db = db
+    def __init__(self, data_dir: Path):
+        self.dir = data_dir / "conversations"
+        self.call_index = JsonFile(data_dir / "call_index.json", dict)
+
+    def _file(self, conversation_id: str) -> JsonFile | None:
+        if not is_valid_id(conversation_id):
+            return None
+        return JsonFile(self.dir / f"{conversation_id}.json", dict)
 
     def create(
         self,
-        channel: str = "web",
+        channel: str,
+        created_by: str | None = None,
         call_uuid: str | None = None,
         from_number: str | None = None,
         to_number: str | None = None,
-    ) -> int:
-        with self.db.connect() as conn:
-            cur = conn.execute(
-                "INSERT INTO conversations (channel, call_uuid, from_number, to_number, started_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (channel, call_uuid, from_number, to_number, _now()),
-            )
-            return cur.lastrowid
+    ) -> dict:
+        ensure_private_dir(self.dir)
+        conversation = {
+            "id": uuid.uuid4().hex,
+            "channel": channel,
+            "created_by": created_by,
+            "call_uuid": call_uuid,
+            "from_number": from_number,
+            "to_number": to_number,
+            "started_at": now_iso(),
+            "ended_at": None,
+            "messages": [],
+        }
+        self._file(conversation["id"]).write(conversation)
+        if call_uuid:
+            with self.call_index.update() as index:
+                index[call_uuid] = conversation["id"]
+        return conversation
 
-    def get(self, conversation_id: int) -> dict | None:
-        with self.db.connect() as conn:
-            row = conn.execute(
-                f"SELECT {CONVERSATION_FIELDS} FROM conversations WHERE id = ?", (conversation_id,)
-            ).fetchone()
-        return dict(row) if row else None
+    def get(self, conversation_id: str) -> dict | None:
+        file = self._file(conversation_id)
+        if file is None:
+            return None
+        data = file.read()
+        return data or None
 
     def get_by_call_uuid(self, call_uuid: str) -> dict | None:
-        with self.db.connect() as conn:
-            row = conn.execute(
-                f"SELECT {CONVERSATION_FIELDS} FROM conversations WHERE call_uuid = ? "
-                "ORDER BY id DESC LIMIT 1",
-                (call_uuid,),
-            ).fetchone()
-        return dict(row) if row else None
+        conversation_id = self.call_index.read().get(call_uuid)
+        return self.get(conversation_id) if conversation_id else None
 
-    def mark_ended(self, conversation_id: int) -> None:
-        with self.db.connect() as conn:
-            conn.execute(
-                "UPDATE conversations SET ended_at = ? WHERE id = ? AND ended_at IS NULL",
-                (_now(), conversation_id),
-            )
+    def add_message(self, conversation_id: str, role: str, content: str) -> bool:
+        file = self._file(conversation_id)
+        if file is None:
+            return False
+        with file.update(create=False) as data:
+            if data is None:
+                return False  # deleted meanwhile
+            data["messages"].append({"role": role, "content": content, "created_at": now_iso()})
+        return True
 
-    def delete(self, conversation_id: int) -> None:
-        with self.db.connect() as conn:
-            conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+    def mark_ended(self, conversation_id: str) -> None:
+        file = self._file(conversation_id)
+        if file is None:
+            return
+        with file.update(create=False) as data:
+            if data is not None and data.get("ended_at") is None:
+                data["ended_at"] = now_iso()
 
-    def list(self, limit: int = 50) -> list[dict]:
-        with self.db.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT c.id, c.channel, c.call_uuid, c.from_number, c.to_number,
-                       c.started_at, c.ended_at,
-                       COUNT(m.id) AS message_count,
-                       (SELECT content FROM messages
-                         WHERE conversation_id = c.id AND role = 'user'
-                         ORDER BY id LIMIT 1) AS first_user_message
-                  FROM conversations c
-                  LEFT JOIN messages m ON m.conversation_id = c.id
-                 GROUP BY c.id
-                 ORDER BY c.id DESC
-                 LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
-        return [dict(row) for row in rows]
+    def delete(self, conversation_id: str) -> bool:
+        file = self._file(conversation_id)
+        if file is None:
+            return False
+        conversation = file.read()
+        deleted = file.delete()
+        call_uuid = conversation.get("call_uuid") if conversation else None
+        if call_uuid:
+            with self.call_index.update() as index:
+                index.pop(call_uuid, None)
+        return deleted
 
-    def add_message(self, conversation_id: int, role: str, content: str) -> None:
-        with self.db.connect() as conn:
-            conn.execute(
-                "INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (conversation_id, role, content, _now()),
-            )
-
-    def list_messages(self, conversation_id: int) -> list[dict]:
-        with self.db.connect() as conn:
-            rows = conn.execute(
-                "SELECT role, content, created_at FROM messages "
-                "WHERE conversation_id = ? ORDER BY id",
-                (conversation_id,),
-            ).fetchall()
-        return [dict(row) for row in rows]
+    def list(self, limit: int) -> list[dict]:
+        if not self.dir.exists():
+            return []
+        conversations = []
+        for path in self.dir.glob("*.json"):
+            data = self.get(path.stem)
+            if data:
+                conversations.append(data)
+        conversations.sort(key=lambda c: c["started_at"], reverse=True)
+        return conversations[:limit]

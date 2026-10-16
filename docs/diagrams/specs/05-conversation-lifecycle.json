@@ -1,0 +1,190 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Conversation Lifecycle",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1030,
+      640
+    ]
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "Conversation states"
+    },
+    {
+      "id": "phone",
+      "label": "Phone: listening"
+    },
+    {
+      "id": "silence",
+      "label": "Phone: silence loop"
+    },
+    {
+      "id": "terminal",
+      "label": "Rejected requests"
+    }
+  ],
+  "states": [
+    {
+      "id": "created",
+      "type": "start",
+      "label": "Created",
+      "sublabel": "greeting stored",
+      "lane": "main",
+      "col": 0,
+      "step": "01",
+      "tag": "web or phone"
+    },
+    {
+      "id": "active",
+      "type": "active",
+      "label": "Active",
+      "sublabel": "user/assistant turns",
+      "lane": "main",
+      "col": 1,
+      "step": "02",
+      "tag": "reply()"
+    },
+    {
+      "id": "ending",
+      "type": "decision",
+      "label": "End trigger",
+      "sublabel": "End call or hangup",
+      "lane": "main",
+      "col": 2,
+      "step": "03",
+      "tag": "mark_ended"
+    },
+    {
+      "id": "ended",
+      "type": "success",
+      "label": "Ended",
+      "sublabel": "ended_at set",
+      "lane": "main",
+      "col": 3,
+      "step": "04",
+      "tag": "read-only"
+    },
+    {
+      "id": "deleted",
+      "type": "neutral",
+      "label": "Deleted",
+      "sublabel": "admin only",
+      "lane": "main",
+      "col": 4,
+      "step": "05",
+      "tag": "file removed"
+    },
+    {
+      "id": "waiting",
+      "type": "waiting",
+      "label": "Waiting for speech",
+      "sublabel": "Plivo GetInput",
+      "lane": "phone",
+      "col": 0,
+      "tag": "phone"
+    },
+    {
+      "id": "silent",
+      "type": "failure",
+      "label": "Silent turn",
+      "sublabel": "re-prompt",
+      "lane": "silence",
+      "col": 0,
+      "tag": "silent += 1",
+      "yOffset": 120
+    },
+    {
+      "id": "conflict",
+      "type": "failure",
+      "label": "409 Conflict",
+      "sublabel": "message after end",
+      "lane": "terminal",
+      "col": 2,
+      "tag": "terminal"
+    }
+  ],
+  "transitions": [
+    {
+      "id": "await-speech",
+      "from": "active",
+      "to": "waiting",
+      "label": "GetInput",
+      "variant": "default",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "speech-in",
+      "from": "waiting",
+      "to": "active",
+      "label": "Speech",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "no-speech",
+      "from": "waiting",
+      "to": "silent",
+      "label": "no Speech",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "id": "reprompt",
+      "from": "silent",
+      "to": "waiting",
+      "label": "re-prompt",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "left",
+      "route": "left-channel"
+    },
+    {
+      "id": "silence-limit",
+      "from": "silent",
+      "to": "ended",
+      "label": "limit: Hangup",
+      "variant": "security",
+      "fromSide": "right",
+      "toSide": "bottom"
+    },
+    {
+      "id": "late-message",
+      "from": "ended",
+      "to": "conflict",
+      "label": "POST /messages",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Main path",
+      "items": [
+        "start() stores the greeting; End call, hangup webhook or silence limit set ended_at"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Phone waits",
+      "items": [
+        "Empty Speech re-prompts until silent > PLIVO_MAX_SILENT_TURNS (default 2), then Hangup"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Guards",
+      "items": [
+        "reply() after end -> 409 Conflict; DELETE /conversations/{id} requires admin"
+      ]
+    }
+  ]
+}
